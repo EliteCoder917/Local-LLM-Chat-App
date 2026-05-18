@@ -29,13 +29,13 @@ pyinstaller `
   --collect-all fastapi `
   --collect-all pydantic `
   --collect-all httpx `
+  --collect-all llama_cpp `
+  --collect-binaries llama_cpp `
+  --collect-data llama_cpp `
+  --collect-submodules backend `
   --hidden-import websockets `
-  --hidden-import backend.ws `
-  --hidden-import backend.agent.loop `
-  --hidden-import backend.tools.registry `
-  --hidden-import backend.llm.ollama_engine `
   --paths $root `
-  $root\backend\main.py
+  $root\backend_entry.py
 
 # PyInstaller writes to python-dist\backend\backend.exe — flatten one level.
 $inner = Join-Path $dist "backend"

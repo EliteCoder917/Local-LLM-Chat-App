@@ -25,3 +25,11 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
+# Auto-update: installed apps poll GitHub Releases on this repo and download
+# new versions when published. Requires a GH_TOKEN env var (Personal Access
+# Token with `repo` scope) set when running `npm run release` so the
+# publisher can upload the .exe + latest.yml to a new GitHub Release.
+publish:
+  provider: github
+  owner: EliteCoder917
+  repo: Local-LLM-Chat-App

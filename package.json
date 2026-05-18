@@ -12,6 +12,7 @@
     "build:python": "powershell -ExecutionPolicy Bypass -File scripts/build-python.ps1",
     "build": "npm run build:renderer && npm run build:electron && npm run build:python",
     "dist": "npm run build && electron-builder --win",
+    "release": "npm run build && electron-builder --win --publish always",
     "start": "electron dist-electron/main.js"
   },
   "devDependencies": {
@@ -31,6 +32,7 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
+    "electron-updater": "^6.8.3",
     "highlight.js": "^11.9.0",
     "katex": "^0.16.11",
     "lucide-react": "^0.460.0",

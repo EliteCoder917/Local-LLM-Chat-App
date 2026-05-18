@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'node:path';
+import { autoUpdater } from 'electron-updater';
 import { PythonBridge } from './python-bridge';
 import { PermissionManager } from './permissions';
 import { Store } from './store';
@@ -66,6 +67,49 @@ async function createWindow() {
     const granted = await perms.requestInteractive(win!, req);
     bridge.sendPermissionResponse(req.id, granted);
   });
+
+  // Auto-update wiring — only in packaged builds. In dev there's no
+  // installer to replace and the GitHub release polling would just spam
+  // 404s. The library reads its provider config from
+  // electron-builder.yml's `publish:` block, which we point at
+  // EliteCoder917/Local-LLM-Chat-App.
+  if (!isDev) {
+    autoUpdater.autoDownload = true;            // grab updates in the background
+    autoUpdater.autoInstallOnAppQuit = true;    // apply on next clean shutdown
+
+    autoUpdater.on('error', (err) => {
+      console.warn('[auto-update] error:', err?.message ?? err);
+    });
+    autoUpdater.on('update-available', (info) => {
+      // Notify the renderer so it can show a small toast — non-blocking.
+      win?.webContents.send('app:update-available', {
+        version: info.version,
+        releaseNotes: info.releaseNotes ?? '',
+      });
+    });
+    autoUpdater.on('update-downloaded', async (info) => {
+      // The update is staged. Ask the user whether to install now (relaunches
+      // the app) or wait until next quit (autoInstallOnAppQuit handles it).
+      const { response } = await dialog.showMessageBox(win!, {
+        type: 'info',
+        title: 'Update ready',
+        message: `Version ${info.version} is ready to install.`,
+        detail: 'Restart now to apply the update, or keep working and it will install next time you quit the app.',
+        buttons: ['Restart now', 'Later'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      if (response === 0) {
+        autoUpdater.quitAndInstall();
+      }
+    });
+
+    try {
+      await autoUpdater.checkForUpdates();
+    } catch (e) {
+      console.warn('[auto-update] initial check failed:', e);
+    }
+  }
 }
 
 // ─── IPC ──────────────────────────────────────────────────────────────
