@@ -1,0 +1,23 @@
+{
+  "settings": {
+    "theme": "dark",
+    "model": "llama3.1:8b",
+    "engine": "ollama",
+    "modelPath": "",
+    "ollamaUrl": "http://127.0.0.1:11434",
+    "workspace": "",
+    "agentMode": true,
+    "maxIterations": 10,
+    "temperature": 0.7,
+    "systemPrompt": "You are a helpful local AI coding assistant with access to file and shell tools. When a tool is needed, emit a JSON block tagged ```tool. Otherwise answer in markdown."
+  },
+  "permissions": {
+    "file.read": true,
+    "file.write": false,
+    "file.delete": false,
+    "exec.python": false,
+    "exec.shell": false,
+    "exec.script": false,
+    "network": false
+  }
+}

@@ -1,0 +1,27 @@
+appId: com.local.aiide
+productName: Local AI IDE
+directories:
+  output: release
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - resources/**/*
+  - package.json
+extraResources:
+  - from: backend
+    to: backend
+    filter:
+      - "**/*"
+      - "!__pycache__"
+      - "!**/__pycache__/**"
+  - from: python-dist
+    to: python-dist
+    filter:
+      - "**/*"
+win:
+  target: nsis
+  icon: resources/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false

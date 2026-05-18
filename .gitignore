@@ -1,0 +1,25 @@
+node_modules/
+dist/
+dist-electron/
+release/
+python-dist/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.DS_Store
+*.log
+*.sqlite
+*.sqlite3
+.vite/
+
+# Local tooling state — not source, contains local paths
+.claude/
+.build/
+build-log.txt
+compile-log.txt
+
+# Anything the user might generate locally that contains personal paths
+*.local.json
+vision-debug.log

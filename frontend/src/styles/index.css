@@ -1,0 +1,153 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* ChatGPT-ish palette */
+  --bg-app:    #212121;
+  --bg-side:   #171717;
+  --bg-hover:  #2a2a2a;
+  --bg-input:  #303030;
+  --bd-soft:   #2f2f2f;
+  --bd-strong: #424242;
+  --fg:        #ececec;
+  --fg-muted:  #b4b4b4;
+  --fg-dim:    #8e8e8e;
+}
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg-app);
+  color: var(--fg);
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.mono { font-family: ui-monospace, "JetBrains Mono", "Cascadia Code", Consolas, monospace; }
+
+/* Scrollbars — slim, no Windows-style up/down arrow buttons */
+.scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.scroll::-webkit-scrollbar-track { background: transparent; }
+.scroll::-webkit-scrollbar-thumb { background: #3f3f3f; border-radius: 4px; }
+.scroll::-webkit-scrollbar-thumb:hover { background: #525252; }
+.scroll::-webkit-scrollbar-button { display: none; height: 0; width: 0; }
+.scroll::-webkit-scrollbar-corner { background: transparent; }
+.scroll { scrollbar-width: thin; scrollbar-color: #3f3f3f transparent; }
+
+/* App-wide: nuke arrow buttons on every scrollable element by default. */
+*::-webkit-scrollbar-button { display: none; height: 0; width: 0; }
+
+/* Markdown / prose tweaks */
+.prose { font-size: 14.5px; line-height: 1.65; color: var(--fg); }
+.prose p { margin: 0.55em 0; }
+.prose ul, .prose ol { margin: 0.4em 0; padding-left: 1.4em; }
+.prose ul > li, .prose ol > li { margin: 0.15em 0; }
+.prose strong { color: var(--fg); font-weight: 600; }
+.prose h1, .prose h2, .prose h3, .prose h4 { color: var(--fg); font-weight: 600; }
+.prose h1 { font-size: 1.45em; margin: 1.2em 0 0.6em; }
+.prose h2 { font-size: 1.25em; margin: 1.1em 0 0.5em; }
+.prose h3 { font-size: 1.1em; margin: 1em 0 0.45em; }
+.prose a { color: #7eb6ff; text-decoration: underline; text-underline-offset: 2px; }
+.prose blockquote {
+  border-left: 3px solid #4a4a4a;
+  padding-left: 12px;
+  color: var(--fg-muted);
+  margin: 0.6em 0;
+}
+.prose pre {
+  background: #0a0a0a !important;
+  border: 1px solid var(--bd-soft);
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow: auto;
+}
+.prose code { font-size: 13px; }
+.prose table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 13.5px;
+}
+.prose th, .prose td {
+  border: 1px solid var(--bd-soft);
+  padding: 6px 10px;
+}
+.prose th { background: #2a2a2a; }
+
+/* Convenience colour utilities mirroring the variables */
+.bg-app    { background: var(--bg-app); }
+.bg-side   { background: var(--bg-side); }
+.bg-input  { background: var(--bg-input); }
+.bg-soft   { background: #2a2a2a; }
+.bd-soft   { border-color: var(--bd-soft); }
+.bd-strong { border-color: var(--bd-strong); }
+.fg-muted  { color: var(--fg-muted); }
+.fg-dim    { color: var(--fg-dim); }
+
+/* KaTeX inherits page text color */
+.katex { color: var(--fg) !important; }
+
+/* ─── Custom range slider (ChatGPT-style track + thumb) ─────── */
+input[type="range"].slim {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: var(--bd-strong);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+input[type="range"].slim::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--fg);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.1s;
+  border: 2px solid var(--bg-app);
+  box-shadow: 0 0 0 1px var(--bd-strong);
+}
+input[type="range"].slim::-webkit-slider-thumb:hover { transform: scale(1.15); }
+input[type="range"].slim::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: var(--fg);
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid var(--bg-app);
+  box-shadow: 0 0 0 1px var(--bd-strong);
+}
+
+/* ─── Custom checkbox (just visual; logic is the native input) ─── */
+.toggle input[type="checkbox"] { display: none; }
+.toggle .track {
+  width: 32px;
+  height: 18px;
+  background: var(--bd-strong);
+  border-radius: 9999px;
+  position: relative;
+  transition: background 0.15s;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.toggle .track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: var(--fg);
+  border-radius: 50%;
+  transition: transform 0.15s;
+}
+.toggle input[type="checkbox"]:checked + .track {
+  background: #10a37f;  /* ChatGPT-green */
+}
+.toggle input[type="checkbox"]:checked + .track::after {
+  transform: translateX(14px);
+}
