@@ -82,6 +82,7 @@ const DEFAULT_SETTINGS: Settings = {
   // they can turn this off in Settings → Model → Attachments.
   sendImagesAsBase64: true,
   visionHandler: '',
+  thinkingMode: 'smart',
 };
 
 function loadConversations(): Conversation[] {
@@ -152,6 +153,10 @@ export const useStore = create<State>((set, get) => ({
     const allSettings = await api.settings.get();
     const stored = (allSettings.settings as Partial<Settings>) ?? {};
     const merged: Settings = { ...DEFAULT_SETTINGS, ...stored };
+    // Migrate: 'deep' used to be a third thinking mode but it's functionally
+    // identical to 'smart' for Qwen3 (both produce reasoning). Coerce any
+    // legacy stored value to 'smart' so the picker shows a valid option.
+    if ((merged.thinkingMode as string) === 'deep') merged.thinkingMode = 'smart';
     const perms = await api.perms.get();
     const convs = get().conversations;
     set({

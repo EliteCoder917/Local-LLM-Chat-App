@@ -89,6 +89,13 @@ async def ws_endpoint(socket: WebSocket) -> None:
         if current_task and not current_task.done():
             runner.cancel()
             try:
+                if loader.is_loaded():
+                    engine = loader.get()
+                    if hasattr(engine, "abort"):
+                        engine.abort()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
                 await current_task
             except Exception:  # noqa: BLE001
                 pass
@@ -116,6 +123,19 @@ async def ws_endpoint(socket: WebSocket) -> None:
                     result: Any = await handle_chat(params)
                 elif method == "cancel":
                     runner.cancel()
+                    # Cancel the agent loop AND abort the engine — the former
+                    # stops new tokens from being forwarded to the renderer;
+                    # the latter actually terminates llama.cpp's generation
+                    # in its background thread. Without engine.abort(),
+                    # llama.cpp keeps running until natural EOS and the next
+                    # prompt deadlocks behind it.
+                    try:
+                        if loader.is_loaded():
+                            engine = loader.get()
+                            if hasattr(engine, "abort"):
+                                engine.abort()
+                    except Exception:  # noqa: BLE001
+                        pass
                     result = "cancelling"
                 elif method == "model-load":
                     # Apply any settings sent inline before loading.

@@ -3,10 +3,12 @@ import {
   Plus, ArrowUp, Square, Mic, Sparkles, X,
   Pencil, GraduationCap, Code2, ListChecks, Lightbulb,
   FileText, Image as ImageIcon, Paperclip,
+  Brain, Zap, ChevronDown,
 } from 'lucide-react';
 import { useStore } from '../state/store';
 import { api, BACKEND_HTTP } from '../ipc/bridge';
-import { sendChat, estimateAttachmentTokens } from '../hooks/useChat';
+import { sendChat, estimateAttachmentTokens, thinkingSupported } from '../hooks/useChat';
+import type { ThinkingMode } from '../state/types';
 import { maybeRunSlash, suggestSlash, COMMANDS } from '../lib/slashCommands';
 import { roughTokens } from '../lib/parseThinking';
 import type { Attachment } from '../state/types';
@@ -141,7 +143,7 @@ function Composer({ streaming }: { streaming: boolean }) {
 // ─── @file expansion ──────────────────────────────────────────────
 const FILE_REF_RE = /(?:^|\s)@([\w./\\-]+)/g;
 
-async function expandFileRefs(text: string): Promise<string> {
+export async function expandFileRefs(text: string): Promise<string> {
   const refs: string[] = [];
   text.replace(FILE_REF_RE, (_m, p1: string) => { refs.push(p1); return ''; });
   if (refs.length === 0) return text;
@@ -172,7 +174,7 @@ interface AutocompleteState {
   selected: number;
 }
 
-function InputBox({
+export function InputBox({
   value, onChange, attachments, onAttachmentsChange, onSubmit, disabled, onCancel,
 }: {
   value: string;
@@ -308,14 +310,24 @@ function InputBox({
       const name = p.split(/[\\/]/).pop() ?? p;
       if (IMG_EXT.has(ext)) {
         try {
-          const fileUrl = 'file:///' + p.replace(/\\/g, '/');
-          const blob = await (await fetch(fileUrl)).blob();
+          // Use the Electron IPC bridge to read the file bytes via Node in
+          // the main process. The renderer can't fetch('file:///...') under
+          // Electron's CSP — that path silently failed and was the reason
+          // "Attach image" from the OS dialog appeared to do nothing.
+          const { base64, size } = await api.fs.readFile(p);
+          const mime = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+          const byteString = atob(base64);
+          const bytes = new Uint8Array(byteString.length);
+          for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i);
+          const blob = new Blob([bytes], { type: mime });
           const dataUri = await loadAndDownsampleImage(blob);
           next.push({
             id: crypto.randomUUID(), kind: 'image', name,
-            dataUri, size: blob.size, mime: blob.type || `image/${ext}`,
+            dataUri, size, mime,
           });
-        } catch { /* skip unreadable image */ }
+        } catch (e) {
+          console.error('failed to read picked image', p, e);
+        }
         continue;
       }
       try {
@@ -435,7 +447,7 @@ function InputBox({
       )}
 
       <div className="flex items-center justify-between mt-2">
-        <div className="relative flex items-center gap-1">
+        <div className="relative flex items-center gap-1.5">
           <button
             onClick={() => setAttachMenu((o) => !o)}
             title="Attach"
@@ -443,6 +455,7 @@ function InputBox({
           >
             <Plus className={`w-4 h-4 transition-transform ${attachMenu ? 'rotate-45' : ''}`} />
           </button>
+          <ThinkingPicker />
           <span className="text-[11px] text-[var(--fg-dim)] ml-1">
             {tokenCount.toLocaleString()} tokens
           </span>
@@ -599,20 +612,108 @@ function AttachmentChip({ a, onRemove }: { a: Attachment; onRemove: () => void }
 }
 
 function MenuItem({
-  icon, label, hint, onClick,
-}: { icon: React.ReactNode; label: string; hint?: string; onClick: () => void }) {
+  icon, label, hint, onClick, active,
+}: { icon: React.ReactNode; label: string; hint?: string; onClick: () => void; active?: boolean }) {
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--bg-hover)] text-[13px]"
+      className={`w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--bg-hover)] text-[13px] ${
+        active ? 'bg-[var(--bg-hover)]' : ''
+      }`}
     >
       <span className="text-[var(--fg-muted)] shrink-0">{icon}</span>
       <div className="min-w-0 flex-1">
-        <div className="text-[var(--fg)]">{label}</div>
+        <div className="text-[var(--fg)] flex items-center gap-1.5">
+          {label}
+          {active && (
+            <span className="text-emerald-400 text-[10px]">●</span>
+          )}
+        </div>
         {hint && <div className="text-[10.5px] text-[var(--fg-dim)]">{hint}</div>}
       </div>
     </button>
   );
+}
+
+/**
+ * Thinking-depth picker — Copilot-style dropdown next to the + button.
+ * Only renders when the loaded model recognises Qwen-style `/think` /
+ * `/no_think` toggles; for other models the control is hidden entirely.
+ */
+function ThinkingPicker() {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const supported = useStoreThinking();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  if (!supported) return null;
+
+  const mode = settings.thinkingMode;
+  const current = THINKING_OPTIONS.find((o) => o.value === mode) ?? THINKING_OPTIONS[0];
+  const CurrentIcon = current.icon;
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-1 pl-2 pr-1.5 h-7 rounded-full text-[11.5px] text-[var(--fg-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--fg)]"
+        title="Thinking depth"
+      >
+        <CurrentIcon className="w-3.5 h-3.5" />
+        <span>{current.label}</span>
+        <ChevronDown className="w-3 h-3 text-[var(--fg-dim)]" />
+      </button>
+      {open && (
+        <div className="absolute left-0 bottom-full mb-2 w-[260px] rounded-xl border bd-strong bg-[var(--bg-app)] shadow-2xl z-30 overflow-hidden">
+          {THINKING_OPTIONS.map((opt) => {
+            const Icon = opt.icon;
+            return (
+              <MenuItem
+                key={opt.value}
+                icon={<Icon className="w-4 h-4" />}
+                label={opt.label}
+                hint={opt.hint}
+                active={opt.value === mode}
+                onClick={() => {
+                  setOpen(false);
+                  void setSettings({ thinkingMode: opt.value });
+                }}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const THINKING_OPTIONS: {
+  value: ThinkingMode;
+  label: string;
+  hint: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
+  { value: 'smart', label: 'Smart', hint: 'Model thinks before answering.',   icon: Sparkles },
+  { value: 'quick', label: 'Quick', hint: 'Skip reasoning. Fastest replies.', icon: Zap },
+];
+
+/** Re-renders when modelStatus changes (so the picker appears/disappears
+ *  when you switch models). */
+function useStoreThinking(): boolean {
+  // Subscribe to model identity so React re-runs thinkingSupported() when
+  // a different model loads.
+  useStore((s) => s.modelStatus.modelPath);
+  useStore((s) => s.libraryModels);
+  return thinkingSupported();
 }
 
 /**

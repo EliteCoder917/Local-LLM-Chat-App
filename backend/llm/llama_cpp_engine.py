@@ -18,9 +18,16 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
 from contextlib import contextmanager
 from tempfile import TemporaryFile
 from typing import AsyncIterator, Callable, Dict, List, Optional
+
+
+class _AbortGeneration(Exception):
+    """Raised inside llama.cpp's logits_processor when the user clicks Stop.
+    The producer catches this and exits cleanly so the next prompt can run."""
+    pass
 
 from ..config import CONFIG
 from .engine import ChatMessage, LLMEngine
@@ -329,7 +336,38 @@ def _sample_from_current_state(
         # logit bias and try again. Once any real content is produced we
         # let EOS work normally.
         eos_banned = False
+        abort_event = getattr(llama, "_gen_abort", None)
+
+        # Quick mode: pre-fill an EMPTY think block into the KV cache so the
+        # model sees its reasoning section as already closed. This is the
+        # technique Qwen3's official chat template uses for
+        # `enable_thinking=False`: the assistant prefix becomes
+        # `<|im_start|>assistant\n<think>\n\n</think>\n\n` instead of just
+        # `<|im_start|>assistant\n`. The model then generates from after the
+        # close tag — directly to the answer, no reasoning. This is FAR more
+        # reliable than logit-banning `<think>`, which just leaves the model
+        # stuck emitting whitespace because it was trained to think first.
+        if CONFIG.thinking_mode == "quick":
+            try:
+                prefill = llama.tokenize(
+                    b"<think>\n\n</think>\n\n", add_bos=False, special=True,
+                )
+                if prefill:
+                    llama.eval(prefill)
+                    _vlog(
+                        f"[thinking] Quick (vision path): pre-filled empty "
+                        f"think block ({len(prefill)} tokens) so the model "
+                        "skips reasoning.\n"
+                    )
+            except Exception as e:  # noqa: BLE001
+                _vlog(f"[thinking] Quick pre-fill failed (non-fatal): {e}\n")
+
         while generated_count < max_n:
+            # User clicked Stop — break the sampling loop so the next prompt
+            # isn't queued behind a still-running vision generation.
+            if abort_event is not None and abort_event.is_set():
+                finish_reason = "stop"
+                break
             tok = llama.sample(
                 top_k=top_k, top_p=top_p, min_p=min_p, typical_p=1.0,
                 temp=temperature, repeat_penalty=repeat_penalty,
@@ -460,6 +498,11 @@ def _sample_from_current_state(
 
 class LlamaCppEngine(LLMEngine):
     def __init__(self, on_progress: Optional[ProgressCb] = None) -> None:
+        # User-triggered abort flag. When the Stop button is pressed, abort()
+        # is called; the logits_processor we register with llama.cpp checks
+        # this every sample step and raises to terminate generation mid-flight
+        # so the next prompt isn't blocked behind the prior one.
+        self._abort = threading.Event()
         try:
             import llama_cpp  # type: ignore
             from llama_cpp import Llama  # type: ignore
@@ -640,6 +683,13 @@ class LlamaCppEngine(LLMEngine):
                 )
             except Exception as e:  # noqa: BLE001
                 _vlog(f"[vision] post-construct check failed: {e}\n")
+            # Stash a reference to our abort flag on the Llama instance so the
+            # vision sampler (_sample_from_current_state, which only gets the
+            # Llama, not the engine) can check it on every token.
+            try:
+                self._llm._gen_abort = self._abort  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
         except BaseException as e:  # noqa: BLE001 — covers native crashes
             tail = _tail(captured.get("text", ""), lines=40)
             ram_line = (
@@ -697,6 +747,43 @@ class LlamaCppEngine(LLMEngine):
     def _install_log_filter(self) -> None:
         """Install the per-process log filter once. Safe to call repeatedly."""
         _install_log_filter_once()
+
+    def _discover_think_token_ids(self) -> List[int]:
+        """Return the token IDs that open a Qwen-style `<think>` block.
+
+        Different model tokenizers encode this differently — some have a
+        single special token (`<think>`), others split it into BPE pieces.
+        We try the most common encodings and return whatever the model
+        actually has, deduplicated. If nothing's found the Quick-mode
+        suppressor becomes a no-op (which is fine — we still fall back
+        to the soft `/no_think` marker).
+        """
+        candidates = ["<think>", "<|think_start|>", "<|think|>"]
+        ids: list[int] = []
+        seen: set[int] = set()
+        for s in candidates:
+            try:
+                toks = self._llm.tokenize(s.encode("utf-8"), add_bos=False, special=True)
+                # We want the FIRST distinctive token of the sequence —
+                # banning that prevents the block from opening.
+                if toks and toks[0] not in seen:
+                    seen.add(toks[0])
+                    ids.append(toks[0])
+            except Exception:  # noqa: BLE001
+                continue
+        return ids
+
+    def abort(self) -> None:
+        """Signal the generation loop to stop ASAP.
+
+        Sets a thread-safe flag the logits_processor (and our custom vision
+        sampler) check on every sample step. The current `create_chat_completion`
+        call raises out of the C-level loop, the producer thread exits, llama.cpp
+        becomes available for the next request. Without this, clicking Stop
+        only stops the renderer from RECEIVING tokens — llama.cpp keeps
+        running and the next prompt hangs because llama.cpp isn't reentrant.
+        """
+        self._abort.set()
 
     # Map of override slug → ChatHandler class name. Used both by manual
     # override (Settings → Model → Vision handler) and by the auto-detect
@@ -881,6 +968,53 @@ class LlamaCppEngine(LLMEngine):
         loop = asyncio.get_event_loop()
         queue: asyncio.Queue[str | BaseException | None] = asyncio.Queue()
 
+        # Reset the abort flag for this new request. The flag is set by the
+        # Stop button (via engine.abort()) and checked on every sample step
+        # by the logits_processor below — and by _sample_from_current_state
+        # for vision turns.
+        self._abort.clear()
+
+        # Logits processors chain:
+        #   1. Abort processor — terminates llama.cpp mid-decode when Stop
+        #      is clicked. Without it, the C-level loop runs until EOS and
+        #      blocks the next prompt.
+        #   2. No-think processor (Quick mode only) — suppresses the
+        #      <think> special token for the first few sample steps so
+        #      the model can't start a reasoning block. Soft markers like
+        #      `/no_think` aren't reliable on aggressive fine-tunes; this
+        #      forces the issue at the logit level.
+        try:
+            from llama_cpp import LogitsProcessorList  # type: ignore
+            def _abort_processor(_input_ids, logits):  # noqa: ANN001
+                if self._abort.is_set():
+                    raise _AbortGeneration()
+                return logits
+
+            processors = [_abort_processor]
+
+            if CONFIG.thinking_mode == "quick":
+                think_ids = self._discover_think_token_ids()
+                if think_ids:
+                    sys.stderr.write(
+                        f"[thinking] Quick mode: suppressing tokens {think_ids} "
+                        "for the opening sample steps\n"
+                    )
+                    state = {"steps_remaining": 6}
+                    def _no_think_processor(_input_ids, logits):  # noqa: ANN001
+                        if state["steps_remaining"] > 0:
+                            for tid in think_ids:
+                                try:
+                                    logits[tid] = -1e30
+                                except Exception:  # noqa: BLE001
+                                    pass
+                            state["steps_remaining"] -= 1
+                        return logits
+                    processors.append(_no_think_processor)
+
+            abort_processors = LogitsProcessorList(processors)
+        except Exception:  # noqa: BLE001 — older builds may differ
+            abort_processors = None
+
         # If this request includes images, force a clean KV cache. The Qwen-VL
         # handler (and most multimodal handlers) re-tokenize and re-insert
         # image embeddings on every call, but llama.cpp's slot allocator
@@ -901,11 +1035,14 @@ class LlamaCppEngine(LLMEngine):
 
         def producer() -> None:
             try:
-                for chunk in self._llm.create_chat_completion(
-                    messages=[{"role": m.role, "content": m.content} for m in messages],
-                    stream=True,
-                    temperature=CONFIG.temperature,
-                ):
+                kwargs: Dict[str, object] = {
+                    "messages": [{"role": m.role, "content": m.content} for m in messages],
+                    "stream": True,
+                    "temperature": CONFIG.temperature,
+                }
+                if abort_processors is not None:
+                    kwargs["logits_processor"] = abort_processors
+                for chunk in self._llm.create_chat_completion(**kwargs):
                     delta = (
                         chunk.get("choices", [{}])[0]
                         .get("delta", {})
@@ -913,6 +1050,9 @@ class LlamaCppEngine(LLMEngine):
                     )
                     if delta:
                         loop.call_soon_threadsafe(queue.put_nowait, delta)
+            except _AbortGeneration:
+                # Normal exit — user clicked Stop. No error to surface.
+                pass
             except BaseException as e:  # noqa: BLE001
                 loop.call_soon_threadsafe(queue.put_nowait, e)
             finally:

@@ -19,6 +19,7 @@ class Config:
     model: str = "local-gguf"
     mmproj_path: str = ""           # paired multimodal projector for vision models
     vision_handler: str = ""        # manual handler family override; "" = auto-detect
+    thinking_mode: str = "smart"    # "smart" | "quick" | "deep" — Qwen-style reasoning toggle
     ollama_url: str = "http://127.0.0.1:11434"
     model_path: str = ""
     temperature: float = 0.7
@@ -57,6 +58,7 @@ class Config:
                 "nCtx": "n_ctx",
                 "gpuOffloadGb": "gpu_offload_gb",
                 "visionHandler": "vision_handler",
+                "thinkingMode": "thinking_mode",
             }.get(k, k)
             if not hasattr(self, key):
                 continue

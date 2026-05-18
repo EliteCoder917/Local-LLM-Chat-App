@@ -15,6 +15,7 @@ export interface RendererApi {
       filters?: { name: string; extensions: string[] }[],
       multi?: boolean,
     ) => Promise<string | string[] | null>;
+    readFile: (filePath: string) => Promise<{ base64: string; size: number }>;
   };
   llm: {
     send: (payload: unknown) => Promise<unknown>;

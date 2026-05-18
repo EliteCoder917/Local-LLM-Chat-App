@@ -36,6 +36,10 @@ export interface Message {
   // marks a synthetic message produced by auto-compaction; renders distinctly
   kind?: 'summary';
   compactedCount?: number;  // how many original messages got rolled into this
+  // Hidden suffix appended to the content when the message is sent to the
+  // model — currently used for the Qwen `/think` / `/no_think` toggle so
+  // the markers don't show up in the user's own message bubble.
+  sendSuffix?: string;
 }
 
 export interface Conversation {
@@ -93,7 +97,15 @@ export interface Settings {
   // Useful when an mmproj is shipped without arch metadata that names its
   // family (e.g. some custom Qwen-VL fine-tunes only set the LLM's arch).
   visionHandler: string;
+  // Thinking toggle for models that support reasoning (currently the Qwen3
+  // family). 'smart' = let the model think (default — Qwen3 always thinks
+  // unless told not to), 'quick' = pre-fill an empty <think> block so the
+  // model skips reasoning. For models without thinking support the UI hides
+  // this control entirely.
+  thinkingMode: 'smart' | 'quick';
 }
+
+export type ThinkingMode = 'smart' | 'quick';
 
 // Vision handler slugs accepted by the backend. Keep in sync with
 // `LlamaCppEngine._HANDLER_BY_SLUG` in llama_cpp_engine.py.

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { autoUpdater } from 'electron-updater';
 import { PythonBridge } from './python-bridge';
@@ -141,6 +142,18 @@ ipcMain.handle('fs:pickFile', async (_e, filters?: { name: string; extensions: s
   });
   if (r.canceled) return null;
   return multi ? r.filePaths : r.filePaths[0];
+});
+
+// Read a file from disk as base64 so the renderer (sandboxed, can't fetch
+// file:// URLs) can turn it into a Blob/dataURI. Used by the attach-image
+// menu — without this, picking an image via the OS dialog silently fails
+// because fetch('file:///...') is blocked under Electron's CSP.
+ipcMain.handle('fs:readFile', async (_e, filePath: string) => {
+  const buf = await fs.readFile(filePath);
+  return {
+    base64: buf.toString('base64'),
+    size: buf.byteLength,
+  };
 });
 
 ipcMain.handle('llm:send', async (_e, payload: unknown) => bridge.sendChat(payload));

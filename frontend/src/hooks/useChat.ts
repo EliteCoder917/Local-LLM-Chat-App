@@ -167,6 +167,11 @@ function _materializeForModel(m: Message) {
   // Strip <thinking> sections from assistant turns so the model's own
   // reasoning doesn't keep getting fed back into context.
   let textContent = m.role === 'assistant' ? stripThinking(m.content) : m.content;
+  // Append the hidden send-suffix (e.g. " /no_think") so the model sees it
+  // but the message bubble in the UI doesn't show it.
+  if (m.role === 'user' && m.sendSuffix) {
+    textContent = textContent + m.sendSuffix;
+  }
 
   const attachments = m.attachments ?? [];
   if (attachments.length === 0) {
@@ -345,18 +350,52 @@ async function _sendCurrent() {
   });
 }
 
+/** True if the currently loaded model recognises Qwen-style thinking
+ *  toggles (`/think` and `/no_think`). Right now that's the Qwen3 family;
+ *  we key off the GGUF arch so future variants (qwen3vl, qwen3.5moe, etc.)
+ *  light up automatically. Other models hide the picker. */
+export function thinkingSupported(): boolean {
+  const s = useStore.getState();
+  const loadedId = s.modelStatus.modelPath?.split(/[\\/]/).pop() ?? '';
+  const entry = s.libraryModels.find((m) => m.id === loadedId);
+  const arch = (entry?.arch ?? '').toLowerCase();
+  const filename = loadedId.toLowerCase();
+  return arch.includes('qwen3') || filename.includes('qwen3');
+}
+
+/** Returns the suffix to append to a user message to bias the model's
+ *  thinking depth, or '' if the model doesn't support the toggle or the
+ *  mode is 'smart' (model decides). */
+function thinkingMarker(): string {
+  const s = useStore.getState();
+  if (!thinkingSupported()) return '';
+  // Only the 'quick' mode needs a marker — 'smart' is the model's
+  // natural behavior so injecting `/think` would be redundant. The
+  // real skip-reasoning work is done backend-side by pre-filling an
+  // empty think block; this marker is just a belt-and-suspenders hint.
+  return s.settings.thinkingMode === 'quick' ? ' /no_think' : '';
+}
+
 export async function sendChat(text: string, attachments: Attachment[] = []) {
   const s = useStore.getState();
   if (s.streaming) return;
   const hasAnything = text.trim().length > 0 || attachments.length > 0;
   if (!hasAnything) return;
   if (!s.activeId) s.newConversation();
+  // The marker is appended to the message we SEND to the model, but kept
+  // out of the message we DISPLAY in the chat history so the user doesn't
+  // see "/no_think" cluttering their own message bubbles.
+  const marker = thinkingMarker();
   s.appendMessage({
     id: crypto.randomUUID(),
     role: 'user',
     content: text,
     attachments: attachments.length > 0 ? attachments : undefined,
     ts: Date.now(),
+    // Stash the marker as a hidden suffix that _materializeForModel will
+    // append at send-time. Stored on the message so re-asks (regenerate /
+    // edit) preserve the same mode that was active when first sent.
+    sendSuffix: marker || undefined,
   });
   await _sendCurrent();
 }

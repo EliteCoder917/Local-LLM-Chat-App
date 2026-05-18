@@ -267,9 +267,14 @@ def tools() -> list:
 @app.get("/fs/walk")
 def fs_walk(path: str, limit: int = 2000) -> dict:
     """Recursively list files under `path`, returning relative POSIX paths.
-    Used by the renderer's @file autocomplete. Skips common noise dirs."""
+    Used by the renderer's @file autocomplete. Skips common noise dirs.
+
+    Returns an empty list instead of 404 when the path is missing, so a
+    stale workspace setting doesn't spam the dev console with errors —
+    autocomplete just shows no matches until the user picks a valid folder.
+    """
     if not os.path.isdir(path):
-        raise HTTPException(404, f"Not a directory: {path}")
+        return {"paths": [], "truncated": False}
     SKIP = {"node_modules", ".git", "__pycache__", ".venv", "venv", "dist",
             "build", ".next", "release", ".build", ".vite", "python-dist"}
     out: list[str] = []

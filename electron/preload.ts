@@ -13,6 +13,7 @@ const api = {
     pickFolder: () => ipcRenderer.invoke('fs:pickFolder'),
     pickFile: (filters?: { name: string; extensions: string[] }[], multi?: boolean) =>
       ipcRenderer.invoke('fs:pickFile', filters, multi),
+    readFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
   },
   llm: {
     send: (payload: unknown) => ipcRenderer.invoke('llm:send', payload),

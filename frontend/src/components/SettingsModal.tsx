@@ -85,7 +85,7 @@ export default function SettingsModal({ onClose }: Props) {
                       onChange={(e) => setSettings({ engine: e.target.value as 'ollama' | 'llama-cpp' })}
                       className="w-full bg-side border bd-soft rounded-lg px-3 py-2 text-sm focus:bd-strong outline-none"
                     >
-                      <option value="llama-cpp">Local .gguf (llama-cpp-python)</option>
+                      <option value="llama-cpp">Local model file (.gguf)</option>
                       <option value="ollama">Ollama</option>
                     </select>
                   </Field>
@@ -137,19 +137,16 @@ export default function SettingsModal({ onClose }: Props) {
                   </Section>
                 )}
 
-                <Section
-                  title="Attachments"
-                  hint="Images attached to messages are always shown in the chat. By default the model only sees a '[Image: filename]' placeholder so it doesn't waste tokens on base64. Turn this on only if you've loaded a vision-capable model (LLaVA, Qwen-VL, etc.)."
-                >
+                <Section title="Images">
                   <ToggleRow
-                    label="Send images to model as base64"
-                    desc="Off = placeholder only (fast, no context blown). On = full image data (vision models only)."
+                    label="Send images to the model"
+                    desc="Only useful with a vision-capable model. Otherwise the model just sees a placeholder."
                     checked={settings.sendImagesAsBase64}
                     onChange={(v) => setSettings({ sendImagesAsBase64: v })}
                   />
                 </Section>
 
-                <Section title="System prompt" hint="Verbatim instructions prepended to every conversation. Leave empty for none.">
+                <Section title="System prompt" hint="Instructions prepended to every conversation.">
                   <SystemPromptEditor />
                 </Section>
               </div>
@@ -157,10 +154,10 @@ export default function SettingsModal({ onClose }: Props) {
 
             {tab === 'permissions' && (
               <div className="space-y-5">
-                <Section title="Tool permissions" hint="Each tool the model can call is gated. Toggle on to grant blanket permission; leave off to be prompted each time.">
+                <Section title="Tool permissions" hint="Allow the model to act on its own, or be prompted each time.">
                   <PermissionToggles />
                 </Section>
-                <Section title="Persistent memory" hint="Long-term notes the model has saved. Survives restarts and is shared across all conversations.">
+                <Section title="Saved memory" hint="Notes the model has saved. Shared across all chats.">
                   <MemoryPanel />
                 </Section>
               </div>
@@ -185,28 +182,17 @@ export default function SettingsModal({ onClose }: Props) {
 
             {tab === 'agent' && (
               <div className="space-y-5">
-                <Section
-                  title="Tool access by tab"
-                  hint="Whether the model has tool access is decided by which tab you're in — not a global toggle."
-                >
-                  <div className="text-[13px] text-[var(--fg-muted)] space-y-2">
-                    <p>
-                      <span className="text-[var(--fg)]">Chat tab</span> — pure chat.
-                      The model gets only your system prompt below. It cannot read your
-                      files, run code, or call any tool. Fastest response, no surprises.
-                    </p>
-                    <p>
-                      <span className="text-[var(--fg)]">Code tab</span> — tools enabled.
-                      The full tool catalog is injected into the system prompt and the
-                      model can chain calls. It's instructed to only invoke tools when
-                      you've explicitly asked for an action (read / write / run / refactor).
-                    </p>
+                <Section title="Tools by tab">
+                  <div className="text-[12.5px] text-[var(--fg-muted)] space-y-2 leading-relaxed">
+                    <div>
+                      <span className="text-[var(--fg)] font-medium">Chat tab</span> — plain chat. No tools, no file access.
+                    </div>
+                    <div>
+                      <span className="text-[var(--fg)] font-medium">Code tab</span> — model can read, write, and run code (with the permissions you've granted).
+                    </div>
                   </div>
                 </Section>
-                <Section
-                  title="Agent loop"
-                  hint="Only relevant in the Code tab. Sets the maximum number of tool-call cycles per response."
-                >
+                <Section title="Agent loop" hint="How many tool calls the model can chain per response (Code tab only).">
                   <Field label={`Max iterations — ${settings.maxIterations}`}>
                     <input
                       type="range"
@@ -216,10 +202,6 @@ export default function SettingsModal({ onClose }: Props) {
                       onChange={(e) => setSettings({ maxIterations: parseInt(e.target.value, 10) })}
                       className="slim w-full"
                     />
-                    <div className="text-[11px] text-[var(--fg-dim)] mt-1">
-                      Higher = the model can self-correct over more tool calls before
-                      stopping. Lower = forces an answer sooner.
-                    </div>
                   </Field>
                 </Section>
               </div>
@@ -284,10 +266,10 @@ function SystemPromptEditor() {
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl border bd-soft bg-side p-4 space-y-3">
-      <div>
-        <div className="text-[13px] font-medium text-[var(--fg)]">{title}</div>
-        {hint && <div className="text-[11.5px] text-[var(--fg-dim)] mt-0.5">{hint}</div>}
+    <div className="rounded-xl border bd-soft bg-side p-4 space-y-3.5">
+      <div className="space-y-0.5">
+        <div className="text-[13.5px] font-medium text-[var(--fg)] tracking-tight">{title}</div>
+        {hint && <div className="text-[11.5px] text-[var(--fg-dim)] leading-snug">{hint}</div>}
       </div>
       {children}
     </div>
@@ -298,10 +280,10 @@ function ToggleRow({
   label, desc, checked, onChange,
 }: { label: string; desc?: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
-    <div className="flex items-start gap-3 py-1.5">
+    <div className="flex items-start gap-3">
       <div className="flex-1 min-w-0">
         <div className="text-[13px] text-[var(--fg)]">{label}</div>
-        {desc && <div className="text-[11.5px] text-[var(--fg-dim)]">{desc}</div>}
+        {desc && <div className="text-[11.5px] text-[var(--fg-dim)] leading-snug mt-0.5">{desc}</div>}
       </div>
       <Toggle checked={checked} onChange={onChange} />
     </div>
@@ -310,8 +292,8 @@ function ToggleRow({
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div>
-      <div className="text-xs text-[var(--fg-muted)] mb-1">{label}</div>
+    <div className="space-y-1.5">
+      <div className="text-[11.5px] text-[var(--fg-muted)]">{label}</div>
       {children}
     </div>
   );
@@ -350,11 +332,11 @@ function MemoryPanel() {
   }
 
   return (
-    <div className="mt-4 pt-4 border-t border bd-soft">
+    <div>
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-xs font-semibold uppercase text-[var(--fg-muted)]">
-          Persistent memory ({entries.length})
-        </h3>
+        <div className="text-[12px] text-[var(--fg-muted)]">
+          {entries.length === 0 ? 'No entries yet.' : `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`}
+        </div>
         <div className="flex gap-1">
           <button onClick={refresh} className="px-2 py-1 rounded text-[11px] bg-soft hover:bg-[var(--bd-soft)]">
             Refresh
@@ -368,16 +350,11 @@ function MemoryPanel() {
           </button>
         </div>
       </div>
-      <p className="text-[11px] text-[var(--fg-dim)] mb-2">
-        These are notes the model has saved via the memory tool. They persist across all
-        conversations and survive restarts. Stored at
-        <span className="mono"> %LOCALAPPDATA%\LocalAIIDE\memory.sqlite</span>.
-      </p>
       <div className="rounded border bd-soft bg-app max-h-64 overflow-auto scroll">
         {loading && <div className="p-3 text-xs text-[var(--fg-dim)]">Loading…</div>}
         {!loading && entries.length === 0 && (
           <div className="p-3 text-xs text-[var(--fg-dim)]">
-            No memory entries. (The model hasn't saved anything, or memory permission is off.)
+            Nothing saved yet. Enable the memory permission to let the model save notes.
           </div>
         )}
         {entries.map((e) => {
@@ -418,7 +395,7 @@ function MemoryPanel() {
 }
 
 function LibraryShortcut() {
-  const { setLibraryOpen, libraryModels, libraryRoot, modelStatus } = useStore();
+  const { setLibraryOpen, libraryModels, modelStatus } = useStore();
   const activeId = modelStatus.modelPath?.split(/[\\/]/).pop() ?? null;
   const active = libraryModels.find((m) => m.id === activeId);
   return (
@@ -448,12 +425,9 @@ function LibraryShortcut() {
           onClick={() => setLibraryOpen(true)}
           className="px-3 py-1.5 rounded text-xs bg-blue-700 hover:bg-blue-600 shrink-0"
         >
-          Manage library…
+          Open library
         </button>
       </div>
-      <p className="text-[11px] text-[var(--fg-dim)] mt-1 mono truncate" title={libraryRoot}>
-        {libraryRoot}
-      </p>
     </Field>
   );
 }
@@ -501,9 +475,9 @@ function ContextWindowField() {
   return (
     <Field
       label={
-        `Context window — n_ctx (${value.toLocaleString()}${
-          trained ? ` of ${trained.toLocaleString()} trained` : ''
-        })`
+        `Context window — ${value.toLocaleString()} tokens${
+          trained ? ` (model trained for ${trained.toLocaleString()})` : ''
+        }`
       }
     >
       <input
@@ -516,10 +490,9 @@ function ContextWindowField() {
         className="slim w-full"
       />
       <div className={`mt-1 text-[11px] ${kvWarn ? 'text-amber-400' : 'text-[var(--fg-dim)]'}`}>
-        Estimated KV-cache: <b>~{kvGb.toFixed(1)} GB</b>
-        {' '}(grows linearly with context — eats GPU VRAM if offloaded, else RAM).
+        Memory cost: <b>~{kvGb.toFixed(1)} GB</b>
         {trained > 0 && value > trained && (
-          <span className="text-red-400"> ⚠ above the model's trained context — quality may degrade.</span>
+          <span className="text-red-400"> · above the model's trained range — quality may degrade.</span>
         )}
       </div>
     </Field>
@@ -535,27 +508,22 @@ function GpuOffloadField() {
   const gbPerLayer = info?.model?.gbPerLayer ?? 0;
   const blockCount = info?.model?.blockCount ?? 32;
 
-  // Reserve VRAM for:
-  //   • llama.cpp's compute buffer (~0.5-1 GB)
-  //   • KV-cache for the configured n_ctx
-  //   • the 10% slack the backend precheck enforces (vram_budget = offload * 1.10)
-  // Solve: offload * 1.10 + reservedKv + 0.7 <= free_vram
-  // ⇒ offload <= (free_vram - reservedKv - 0.7) / 1.10
+  // Slider max = the n_ctx-aware safe ceiling, snapped down to a step
+  // boundary. Track ends exactly where you can safely drag to, so you can
+  // use the full available VRAM (no dead zone, no cutoff).
+  //
+  // Note: changing n_ctx will visually shift the thumb's POSITION on the
+  // track because HTML range inputs render the thumb as a percentage of
+  // track length, and the track length here depends on n_ctx via safeMax.
+  // The saved VALUE doesn't change — only the visual percentage does.
   const kvReserve = estimateKvCacheGb(settings.nCtx || 4096, blockCount);
   const gpuFree = gpu?.free_gb ?? 0;
-  // Don't artificially clamp the slider to ~0 while system info is still
-  // loading — that's why the slider felt unresponsive on app launch.
-  const hasInfo = info != null && (info.ramAvailableGb != null || info.gpus.length > 0);
-  const maxOffload = hasInfo
+  const STEP = 0.1;
+  const safeMax = gpu != null
     ? Math.max(0, Math.min(modelSize || 100, (gpuFree - kvReserve - 0.7) / 1.10))
     : (modelSize || 100);
-  const sliderMax = Math.max(0.5, maxOffload);
-
-  // Only clamp the displayed thumb — don't overwrite the stored setting just
-  // because the user dragged n_ctx up. The stored value re-appears once
-  // n_ctx is lowered back and the slider has room again.
+  const sliderMax = Math.max(STEP, Math.floor(safeMax / STEP) * STEP);
   const value = Math.min(settings.gpuOffloadGb, sliderMax);
-  const cappedByCtx = settings.gpuOffloadGb > sliderMax + 0.05;
   const resolvedLayers =
     value >= modelSize && modelSize > 0
       ? blockCount + 1
@@ -573,78 +541,53 @@ function GpuOffloadField() {
         value <= 0
           ? 'GPU offload — CPU only'
           : value >= modelSize && modelSize > 0
-          ? `GPU offload — full model (${modelSize.toFixed(1)} GB · all ${blockCount + 1} layers)`
-          : `GPU offload — ${value.toFixed(1)} GB on GPU (${resolvedLayers}/${blockCount + 1} layers)`
+          ? `GPU offload — full model on GPU (${blockCount + 1} layers)`
+          : `GPU offload — ${value.toFixed(1)} GB (${resolvedLayers} of ${blockCount + 1} layers)`
       }
     >
       <input
         type="range"
         min={0}
         max={sliderMax}
-        step={0.5}
+        step={STEP}
         value={value}
         onChange={(e) => setSettings({ gpuOffloadGb: parseFloat(e.target.value) })}
         className="slim w-full"
       />
 
-      <div className="mt-1 text-[11px] text-[var(--fg-muted)] space-y-0.5">
+      <div className="mt-1.5 text-[11px] text-[var(--fg-muted)] space-y-1">
         {gpu ? (
           <>
-            <div>
-              GPU: <span className="text-[var(--fg)]">{gpu.name}</span>
-              {' — '}
-              <span className={value > gpu.free_gb + 0.5 ? 'text-red-400' : 'text-[var(--fg-muted)]'}>
-                {value.toFixed(1)} GB used
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--fg-dim)]">{gpu.name}</span>
+              <span className="mono text-[var(--fg-muted)]">
+                <span className={value > gpu.free_gb + 0.5 ? 'text-red-400' : 'text-[var(--fg)]'}>
+                  {value.toFixed(1)}
+                </span>
+                {' / '}
+                {gpu.free_gb.toFixed(1)} GB free
               </span>
-              {' / '}
-              <span className="text-[var(--fg-muted)]">{gpu.free_gb.toFixed(1)} GB free</span>
-              {' / '}
-              <span className="text-[var(--fg-dim)]">{gpu.total_gb.toFixed(1)} GB total</span>
             </div>
             <div className="text-[var(--fg-dim)]">
-              Reserved for KV-cache + compute buffer:{' '}
-              <span className="text-[var(--fg-muted)]">~{(kvReserve + 0.7).toFixed(1)} GB</span>
-              {' '}(slider max capped accordingly)
+              {' '}
+              Safe up to <b className="text-[var(--fg-muted)]">{safeMax.toFixed(1)} GB</b> at the current context size.
             </div>
-            {cappedByCtx && (
-              <div className="text-amber-400">
-                Your saved offload ({settings.gpuOffloadGb.toFixed(1)} GB) is above what fits
-                with n_ctx = {settings.nCtx.toLocaleString()}. Lower n_ctx to use it again, or
-                drop the slider to commit a smaller value.
-              </div>
-            )}
           </>
         ) : (
           <div className="text-amber-400">
-            No NVIDIA GPU detected (or CUDA build of llama-cpp-python not installed).
-            Offload above 0 will silently stay on CPU.
+            No GPU detected — model will run on CPU.
           </div>
         )}
 
         {info?.ramAvailableGb != null && modelSize > 0 && (
-          <div>
-            RAM need: <span className={ramShort ? 'text-red-400' : 'text-[var(--fg-muted)]'}>{ramNeed.toFixed(1)} GB</span>
-            {' / '}
-            <span className="text-[var(--fg-muted)]">
+          <div className="flex items-center justify-between text-[var(--fg-dim)]">
+            <span>RAM use</span>
+            <span className="mono">
+              <span className={ramShort ? 'text-red-400' : 'text-[var(--fg-muted)]'}>{ramNeed.toFixed(1)}</span>
+              {' / '}
               {ramAvail.toFixed(1)} GB free
             </span>
-            {info.ramTotalGb && (
-              <span className="text-[var(--fg-dim)]"> / {info.ramTotalGb.toFixed(1)} GB total</span>
-            )}
           </div>
-        )}
-
-        {!gpu && (
-          <details className="mt-1">
-            <summary className="cursor-pointer text-[var(--fg-muted)] hover:text-[var(--fg)]">
-              Install CUDA build of llama-cpp-python…
-            </summary>
-            <pre className="mt-1 px-2 py-1 bg-app border bd-soft rounded text-[10.5px] mono overflow-auto">
-{`pip install --upgrade --force-reinstall --no-cache-dir \\
-  --index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 \\
-  llama-cpp-python`}
-            </pre>
-          </details>
         )}
       </div>
     </Field>

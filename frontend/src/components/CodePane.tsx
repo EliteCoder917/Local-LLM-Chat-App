@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
-import { Folder, FileText, RefreshCw, FolderOpen, ArrowUp, Square } from 'lucide-react';
+import { Folder, FileText, RefreshCw, FolderOpen } from 'lucide-react';
 import { useStore } from '../state/store';
 import { api } from '../ipc/bridge';
 import { listDir, readFileText, writeFileText } from '../hooks/useFS';
 import { sendChat } from '../hooks/useChat';
-import type { FileNode, Message } from '../state/types';
+import type { FileNode, Message, Attachment } from '../state/types';
 import MessageBubble from './MessageBubble';
+import { InputBox, expandFileRefs } from './ChatPane';
 
 function langFromPath(p: string): string {
   const ext = p.split('.').pop()?.toLowerCase();
@@ -44,7 +45,16 @@ export default function CodePane() {
   }
 
   return (
-    <div className="h-full grid grid-cols-[260px_1fr_360px] min-h-0">
+    <div
+      className="h-full grid min-h-0 overflow-hidden"
+      style={{
+        // Left files list and right chat panel each have a min/preferred range
+        // so they shrink gracefully on narrow windows instead of pushing the
+        // chat panel off-screen. The editor (middle) takes whatever remains
+        // and can shrink to zero.
+        gridTemplateColumns: 'minmax(180px, 240px) minmax(0, 1fr) minmax(280px, 360px)',
+      }}
+    >
       <FilesList />
       <EditorColumn />
       <CodeChatColumn />
@@ -198,17 +208,22 @@ function CodeChatColumn() {
     s.activeId ? s.conversations.find((c) => c.id === s.activeId)?.messages ?? [] : [],
   );
   const [text, setText] = useState('');
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [messages]);
 
-  async function send() {
+  async function submit() {
     const v = text.trim();
-    if (!v || streaming) return;
+    if (streaming) return;
+    if (!v && attachments.length === 0) return;
     setText('');
-    // Inline a snippet of the open file so the model has context.
+    const att = attachments;
+    setAttachments([]);
+    // Inline a snippet of the open file so the model has context, then
+    // run the same @file expansion the Chat tab uses.
     let prefixed = v;
     if (openFile) {
       const snippet = openFileContent.length > 8000
@@ -216,15 +231,16 @@ function CodeChatColumn() {
         : openFileContent;
       prefixed = `Working on file: \`${openFile}\`\n\n\`\`\`\n${snippet}\n\`\`\`\n\n${v}`;
     }
-    await sendChat(prefixed);
+    const expanded = await expandFileRefs(prefixed);
+    await sendChat(expanded, att);
   }
 
   return (
-    <div className="border-l bd-soft bg-app flex flex-col min-h-0">
+    <div className="border-l bd-soft bg-app flex flex-col min-h-0 min-w-0">
       <div className="px-3 py-2 text-[11px] uppercase tracking-wider text-[var(--fg-dim)] border-b bd-soft">
         Ask about this file
       </div>
-      <div ref={listRef} className="flex-1 overflow-auto scroll px-3 py-3">
+      <div ref={listRef} className="flex-1 overflow-auto scroll px-3 py-3 min-w-0">
         {messages.length === 0 ? (
           <div className="text-xs text-[var(--fg-dim)] mt-4">
             Open a file and ask: "refactor this", "explain this", "add error handling"…
@@ -233,39 +249,16 @@ function CodeChatColumn() {
           messages.map((m: Message) => <MessageBubble key={m.id} m={m} />)
         )}
       </div>
-      <div className="p-2">
-        <div className="rounded-2xl bg-input border bd-soft px-3 py-2 focus-within:bd-strong">
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-            }}
-            rows={2}
-            placeholder={openFile ? 'Ask about this file…' : 'Ask anything…'}
-            className="w-full bg-transparent text-[var(--fg)] placeholder:text-[var(--fg-dim)] resize-none outline-none text-sm"
-          />
-          <div className="flex items-center justify-end mt-1">
-            {streaming ? (
-              <button
-                onClick={() => api.llm.cancel()}
-                className="w-7 h-7 rounded-full bg-[var(--fg)] hover:bg-white text-[var(--bg-app)] flex items-center justify-center"
-                title="Stop"
-              >
-                <Square className="w-3 h-3 fill-current" />
-              </button>
-            ) : (
-              <button
-                onClick={send}
-                disabled={!text.trim()}
-                className="w-7 h-7 rounded-full bg-[var(--fg)] hover:bg-white disabled:opacity-30 text-[var(--bg-app)] flex items-center justify-center"
-                title="Send"
-              >
-                <ArrowUp className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-        </div>
+      <div className="px-2 pb-2 min-w-0">
+        <InputBox
+          value={text}
+          onChange={setText}
+          attachments={attachments}
+          onAttachmentsChange={setAttachments}
+          onSubmit={submit}
+          disabled={streaming}
+          onCancel={streaming ? () => api.llm.cancel() : undefined}
+        />
       </div>
     </div>
   );
