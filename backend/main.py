@@ -27,7 +27,7 @@ from .tools import list_tools
 from .ws import router as ws_router
 
 
-app = FastAPI(title="Local AI IDE Backend", version="0.1.0")
+app = FastAPI(title="Local AI Studio Backend", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -342,7 +342,7 @@ def fs_write(payload: WritePayload) -> JSONResponse:
 @app.get("/")
 def root() -> dict:
     return {
-        "service": "Local AI IDE Backend",
+        "service": "Local AI Studio Backend",
         "version": app.version,
         "engine": CONFIG.engine,
         "model": CONFIG.model,

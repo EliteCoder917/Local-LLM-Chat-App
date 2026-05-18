@@ -1,9 +1,11 @@
-# Local AI IDE
+# Local AI Studio
 
-A Windows-native desktop AI environment: chat with a local LLM, edit files in a
-VS Code-style editor (Monaco), browse a workspace, run a real PowerShell
-terminal, and let an agent execute tools (file I/O, code execution) — all
-behind explicit permission toggles.
+A Windows-native desktop **runtime for your local LLMs**. Bring any GGUF
+model and Local AI Studio gives it a home: a chat interface (with vision
+support), a VS Code-style editor, a workspace browser, a real PowerShell
+terminal, and a permission-gated agent layer that lets the model touch
+files and run code on your terms. The intelligence comes from whatever
+model you load — this app is the environment around it.
 
 ```
 Electron  ⇄  React renderer (Monaco, xterm.js, react-markdown, zustand)
@@ -118,7 +120,7 @@ npm run dev:electron
 # bundles renderer (Vite), main process (tsc), and freezes Python with PyInstaller
 npm run build
 
-# produces release\Local AI IDE Setup <ver>.exe
+# produces release\Local AI Studio Setup <ver>.exe
 npm run dist
 ```
 

@@ -6,6 +6,14 @@ import { PythonBridge } from './python-bridge';
 import { PermissionManager } from './permissions';
 import { Store } from './store';
 
+// Pin the userData folder to the legacy product name so existing installs
+// (which wrote settings + conversations to %APPDATA%\Local AI IDE\) carry
+// over after the rebrand to "Local AI Studio". Without this, Electron would
+// derive the folder from the new productName and users would silently lose
+// their saved chats. The display name in the title bar / installer / taskbar
+// uses productName from electron-builder.yml; only the data folder is pinned.
+app.setPath('userData', path.join(app.getPath('appData'), 'Local AI IDE'));
+
 const isDev = !app.isPackaged;
 let win: BrowserWindow | null = null;
 let bridge: PythonBridge;
@@ -32,7 +40,7 @@ async function createWindow() {
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#171717',
-    title: 'Local AI Chat',
+    title: 'Local AI Studio',
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

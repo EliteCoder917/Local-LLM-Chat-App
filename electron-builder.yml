@@ -1,5 +1,5 @@
 appId: com.local.aiide
-productName: Local AI IDE
+productName: Local AI Studio
 directories:
   output: release
 files:

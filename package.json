@@ -1,7 +1,7 @@
 {
   "name": "local-ai-ide",
   "version": "0.1.2",
-  "description": "Local AI IDE — chat, editor, terminal, agents, all offline.",
+  "description": "Local AI Studio — chat, vision, code, agents, all offline.",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",

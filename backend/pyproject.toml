@@ -1,7 +1,7 @@
 [project]
 name = "local-ai-ide-backend"
 version = "0.1.0"
-description = "Backend for Local AI IDE"
+description = "Backend for Local AI Studio"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.110",
