@@ -62,6 +62,13 @@ async function createWindow() {
     pythonDist: isDev ? null : path.join(process.resourcesPath, 'python-dist'),
     projectRoot: isDev ? path.join(__dirname, '..') : process.resourcesPath,
     port: backendPort,
+    // Where Python's stdout+stderr get tee'd in packaged builds (where
+    // they'd otherwise vanish into thin air). app.getPath('logs') is
+    // the OS-conventional user-writable log location:
+    //   • Windows: %APPDATA%\Local AI IDE\logs\
+    //   • macOS:   ~/Library/Logs/Local AI IDE/
+    //   • Linux:   ~/.config/Local AI IDE/logs/
+    logDir: isDev ? undefined : app.getPath('logs'),
   });
   await bridge.start();
 

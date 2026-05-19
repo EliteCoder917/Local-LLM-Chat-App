@@ -42,6 +42,7 @@ interface LlmEvent {
   progress?: number | null;
   visionActive?: boolean;
   visionHandler?: string | null;
+  supportsThinking?: boolean;
   // download-progress events carry the full DownloadJob inline
   repo?: string;
   filename?: string;
@@ -87,6 +88,7 @@ export function useChat() {
               progress: e.progress ?? null,
               visionActive: e.visionActive ?? false,
               visionHandler: e.visionHandler ?? null,
+              supportsThinking: e.supportsThinking ?? false,
             });
           }
           break;
@@ -362,16 +364,15 @@ export function thinkingSupported(): boolean {
 }
 
 /** Returns the suffix to append to a user message to bias the model's
- *  thinking depth, or '' if the model doesn't support the toggle or the
- *  mode is 'smart' (model decides). */
+ *  thinking depth. Currently always empty — we used to append ' /no_think'
+ *  in Quick mode but combined with the backend's hard prefill of an empty
+ *  `<think>\n\n</think>\n\n` block, the double-signal caused Qwen3
+ *  fine-tunes to produce ultra-terse one-word replies. The prefill alone
+ *  is the Qwen3-official mechanism (`enable_thinking=False` in their chat
+ *  template) and is sufficient. Kept as a hook for future model families
+ *  that might need an explicit marker. */
 function thinkingMarker(): string {
-  const s = useStore.getState();
-  if (!thinkingSupported()) return '';
-  // Only the 'quick' mode needs a marker — 'smart' is the model's
-  // natural behavior so injecting `/think` would be redundant. The
-  // real skip-reasoning work is done backend-side by pre-filling an
-  // empty think block; this marker is just a belt-and-suspenders hint.
-  return s.settings.thinkingMode === 'quick' ? ' /no_think' : '';
+  return '';
 }
 
 export async function sendChat(text: string, attachments: Attachment[] = []) {

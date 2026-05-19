@@ -1,5 +1,6 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
 import path from 'node:path';
 import WebSocket from 'ws';
 
@@ -8,6 +9,9 @@ export interface BridgeOpts {
   pythonDist: string | null;
   projectRoot: string;
   port: number;
+  /** Directory to write a rolling backend.log into. Used in packaged
+   *  builds where stdout/stderr would otherwise disappear into the void. */
+  logDir?: string;
 }
 
 export class PythonBridge extends EventEmitter {
@@ -45,9 +49,46 @@ export class PythonBridge extends EventEmitter {
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
       shell: false,
     });
-    this.proc.stdout.on('data', (d) => process.stdout.write('[py] ' + d.toString()));
-    this.proc.stderr.on('data', (d) => process.stderr.write('[py-err] ' + d.toString()));
-    this.proc.on('exit', (code) => console.warn('[py] exited', code));
+
+    // In packaged builds, Electron's stdout/stderr is detached from any
+    // console — meaning anything Python writes silently vanishes and we
+    // have no way to diagnose load failures. Tee both streams into a log
+    // file at logDir/backend.log so users (and we) can read what happened.
+    let logStream: fs.WriteStream | null = null;
+    if (this.opts.logDir) {
+      try {
+        fs.mkdirSync(this.opts.logDir, { recursive: true });
+        const logPath = path.join(this.opts.logDir, 'backend.log');
+        logStream = fs.createWriteStream(logPath, { flags: 'a' });
+        const stamp = new Date().toISOString();
+        logStream.write(`\n=== backend spawn ${stamp} ===\n`);
+        logStream.write(`  exe:  ${exe}\n`);
+        logStream.write(`  args: ${args.join(' ')}\n`);
+        logStream.write(`  cwd:  ${cwd}\n\n`);
+      } catch (e) {
+        console.warn('[py] could not open backend.log:', e);
+      }
+    }
+
+    this.proc.stdout.on('data', (d) => {
+      const s = d.toString();
+      process.stdout.write('[py] ' + s);
+      logStream?.write(s);
+    });
+    this.proc.stderr.on('data', (d) => {
+      const s = d.toString();
+      process.stderr.write('[py-err] ' + s);
+      logStream?.write(s);
+    });
+    this.proc.on('exit', (code) => {
+      console.warn('[py] exited', code);
+      logStream?.write(`\n=== backend exited with code ${code} ===\n`);
+      logStream?.end();
+    });
+    this.proc.on('error', (err) => {
+      console.warn('[py] spawn error:', err);
+      logStream?.write(`\n=== spawn error: ${err.message} ===\n`);
+    });
 
     await this.waitForBackend();
     await this.connectWs();

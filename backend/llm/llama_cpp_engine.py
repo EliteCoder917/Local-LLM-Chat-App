@@ -338,26 +338,35 @@ def _sample_from_current_state(
         eos_banned = False
         abort_event = getattr(llama, "_gen_abort", None)
 
-        # Quick mode: pre-fill an EMPTY think block into the KV cache so the
-        # model sees its reasoning section as already closed. This is the
-        # technique Qwen3's official chat template uses for
-        # `enable_thinking=False`: the assistant prefix becomes
-        # `<|im_start|>assistant\n<think>\n\n</think>\n\n` instead of just
-        # `<|im_start|>assistant\n`. The model then generates from after the
-        # close tag — directly to the answer, no reasoning. This is FAR more
-        # reliable than logit-banning `<think>`, which just leaves the model
-        # stuck emitting whitespace because it was trained to think first.
-        if CONFIG.thinking_mode == "quick":
+        # Quick mode: pre-fill a think block into the KV cache with a brief
+        # decision-instruction rather than leaving it empty.
+        #
+        # Why content instead of empty: Qwen3's official chat template uses
+        # an empty `<think>\n\n</think>\n\n` prefill for `enable_thinking=False`.
+        # That works for base Qwen3 but for aggressive fine-tunes (e.g.
+        # HauhauCS's uncensored variant) the empty prefill also triggers the
+        # "be terse" pattern those fine-tunes were trained on — producing
+        # zero-token or single-line replies. Putting a short decision-line
+        # in the think block gives the model semantic context ("I've already
+        # decided to write a proper reply") without re-engaging full
+        # reasoning. The TTFT is still fast and reasoning is still skipped,
+        # but the model produces normal-length output.
+        quick_mode = CONFIG.thinking_mode == "quick"
+        # Tiny safety net only — covers the rare "first sampled token is EOS"
+        # lottery loss, not a sledgehammer over the model's natural stopping.
+        eos_ban_window = 1 if quick_mode else 0
+        if quick_mode:
             try:
                 prefill = llama.tokenize(
-                    b"<think>\n\n</think>\n\n", add_bos=False, special=True,
+                    b"<think>\nNo extended reasoning needed; answering directly.\n</think>\n\n",
+                    add_bos=False, special=True,
                 )
                 if prefill:
                     llama.eval(prefill)
                     _vlog(
-                        f"[thinking] Quick (vision path): pre-filled empty "
-                        f"think block ({len(prefill)} tokens) so the model "
-                        "skips reasoning.\n"
+                        f"[thinking] Quick (vision path): pre-filled think "
+                        f"block with decision-line ({len(prefill)} tokens), "
+                        "EOS first-token safety net only.\n"
                     )
             except Exception as e:  # noqa: BLE001
                 _vlog(f"[thinking] Quick pre-fill failed (non-fatal): {e}\n")
@@ -374,19 +383,18 @@ def _sample_from_current_state(
                 idx=None,
             )
             if tok in eos_ids:
-                if generated_count == 0 and not eos_banned:
-                    # First sampled token was EOS — likely a sampling lottery
-                    # loss, not the model's actual intent. Re-pick the next
-                    # token from the SAME post-mtmd logits with EOS excluded
-                    # (simple argmax-without-EOS — robust across builds and
-                    # doesn't depend on the lower-level sampler-chain API).
-                    # Once content is flowing, EOS works normally for
-                    # turn-end.
-                    _vlog(
-                        f"[vision] first-token EOS detected (tok={tok}); "
-                        "re-picking from logits with EOS excluded.\n"
-                    )
+                in_eos_ban = generated_count < eos_ban_window
+                if (generated_count == 0 and not eos_banned) or in_eos_ban:
+                    # Either the very-first sampling lottery picked EOS, or
+                    # we're inside the Quick-mode early-EOS-suppression
+                    # window. Re-pick from the same logits with EOS masked
+                    # so the model is forced to produce content instead of
+                    # cutting off mid-sentence.
                     eos_banned = True
+                    _vlog(
+                        f"[vision] EOS masked at token {generated_count} "
+                        f"(window={eos_ban_window}); re-picking from logits.\n"
+                    )
                     try:
                         import numpy as _np
                         import llama_cpp as _lcpp
@@ -402,6 +410,10 @@ def _sample_from_current_state(
                         finish_reason = "stop"
                         break
                 else:
+                    _vlog(
+                        f"[vision] EOS at token {generated_count} — "
+                        f"natural stop (window={eos_ban_window} passed).\n"
+                    )
                     finish_reason = "stop"
                     break
             # Feed the sampled token back into the model so the next sample
@@ -813,6 +825,31 @@ class LlamaCppEngine(LLMEngine):
                 f"[warm-up failed, non-fatal] {type(e).__name__}: {e}\n"
             )
 
+        # Probe for `<think>` token support NOW (after warm-up) so the load-time
+        # status snapshot can report supportsThinking accurately. The UI hides
+        # the Smart/Quick picker when this is false; previously the probe was
+        # deferred to first stream() — meaning the picker wouldn't appear on
+        # thinking-capable models until the user had already sent a message.
+        # The probe is wrapped in a broad except: on macOS we've seen the
+        # tokenizer raise BrokenPipeError on a freshly-constructed Llama, in
+        # which case we fall back to a filename heuristic so Qwen3 models still
+        # light up the picker correctly.
+        try:
+            self._think_token_ids = self._discover_think_token_ids()
+        except BaseException as e:  # noqa: BLE001
+            sys.stderr.write(
+                f"[think-probe] tokenizer probe failed ({type(e).__name__}: {e}); "
+                "falling back to filename heuristic.\n"
+            )
+            name_lower = os.path.basename(path).lower()
+            if any(k in name_lower for k in ("qwen3", "qwen-3", "qwq", "deepseek-r1", "r1-")):
+                # Mark as supported via a sentinel non-empty list so the
+                # property returns True. Actual logit suppression code
+                # gracefully no-ops with an empty real-token list.
+                self._think_token_ids = [-1]
+            else:
+                self._think_token_ids = []
+
         self._path = path
 
     def _install_log_filter(self) -> None:
@@ -1089,7 +1126,14 @@ class LlamaCppEngine(LLMEngine):
             processors = [_abort_processor]
 
             if CONFIG.thinking_mode == "quick":
-                think_ids = getattr(self, "_think_token_ids", None) or []
+                # Filter to positive token IDs only — the supports_thinking
+                # flag uses a `-1` sentinel for "filename heuristic match,
+                # no real tokens" so writing to logits[-1] would corrupt
+                # the last real token's score.
+                think_ids = [
+                    t for t in (getattr(self, "_think_token_ids", None) or [])
+                    if isinstance(t, int) and t >= 0
+                ]
                 if think_ids:
                     sys.stderr.write(
                         f"[thinking] Quick mode: suppressing tokens {think_ids} "
@@ -1106,6 +1150,34 @@ class LlamaCppEngine(LLMEngine):
                             state["steps_remaining"] -= 1
                         return logits
                     processors.append(_no_think_processor)
+
+                # Text-path EOS safety net — only mask EOS for the FIRST
+                # sample step (rare "first token is EOS" lottery loss).
+                # No bigger window: the principled fix is the content-bearing
+                # think prefill in the vision sampler, not banning EOS
+                # broadly. The text path doesn't get a prefill (llama.cpp's
+                # standard handler renders the prompt itself), so on text-
+                # only models that aren't vision-paired, the Quick mode is
+                # limited to whatever the fine-tune's natural /no_think
+                # behavior is. Vision-paired models use the wrapper which
+                # has the content prefill.
+                eos_ids_set: list[int] = []
+                try:
+                    eos_ids_set.append(int(self._llm.token_eos()))
+                except Exception:  # noqa: BLE001
+                    pass
+                if eos_ids_set:
+                    ban_state = {"remaining": 1}
+                    def _eos_ban_processor(_input_ids, logits):  # noqa: ANN001
+                        if ban_state["remaining"] > 0:
+                            for eid in eos_ids_set:
+                                try:
+                                    logits[eid] = -1e30
+                                except Exception:  # noqa: BLE001
+                                    pass
+                            ban_state["remaining"] -= 1
+                        return logits
+                    processors.append(_eos_ban_processor)
 
             abort_processors = LogitsProcessorList(processors)
         except Exception:  # noqa: BLE001 — older builds may differ

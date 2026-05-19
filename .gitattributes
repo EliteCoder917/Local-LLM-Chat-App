@@ -1,0 +1,8 @@
+# Force LF line endings for shell scripts so they stay runnable on Mac/Linux
+# even when edited or checked out on Windows. Without this, Git auto-converts
+# them to CRLF and bash chokes with "invalid option name set: pipefail".
+*.sh        text eol=lf
+*.bash      text eol=lf
+
+# Same for any other Unix-specific text we might add:
+Makefile    text eol=lf
