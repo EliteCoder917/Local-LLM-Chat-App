@@ -23,8 +23,8 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['F:\\AI chat app\\backend_entry.py'],
-    pathex=['F:\\AI chat app'],
+    ['/Users/tommy/Documents/projects/Applications/Local LLM chat app/backend_entry.py'],
+    pathex=['/Users/tommy/Documents/projects/Applications/Local LLM chat app'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

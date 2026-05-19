@@ -24,8 +24,13 @@ export class PythonBridge extends EventEmitter {
 
   async start() {
     const usingFrozen = !!this.opts.pythonDist;
+    // PyInstaller's output binary has a `.exe` extension on Windows and no
+    // extension on macOS/Linux. Without this branch the Mac build tries to
+    // spawn `backend.exe` (which doesn't exist) and the bridge hangs forever
+    // waiting on /health.
+    const frozenBinary = process.platform === 'win32' ? 'backend.exe' : 'backend';
     const exe = usingFrozen
-      ? path.join(this.opts.pythonDist!, 'backend.exe')
+      ? path.join(this.opts.pythonDist!, frozenBinary)
       : (process.platform === 'win32' ? 'python' : 'python3');
     // The frozen entry parses --port from argv (see backend_entry.py); the
     // dev path passes it to uvicorn directly. Both honor the dynamically-

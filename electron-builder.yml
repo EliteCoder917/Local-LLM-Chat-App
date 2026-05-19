@@ -25,6 +25,29 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
+mac:
+  # Apple Silicon only — your dev machine is M-series and that's the primary
+  # target. If you ever need x64/Intel support add `target: [dmg, zip]` with
+  # an `arch:` list, but skip that for now since cross-arch from M-series
+  # produces an Intel build that nobody on this machine can test.
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  icon: resources/icon.icns
+  category: public.app-category.developer-tools
+  # Required for unsigned builds — without this, Gatekeeper refuses to even
+  # show the right-click-Open bypass, claiming the app is "damaged".
+  identity: null
+  # Hardened runtime is off because it requires notarization to be useful;
+  # we're shipping unsigned for now. Add `hardenedRuntime: true` + a
+  # notarization step later when you have a Developer ID.
+  hardenedRuntime: false
+  gatekeeperAssess: false
+dmg:
+  # Don't rebuild the DMG layout from a template — keeps the package small
+  # and the build fast.
+  writeUpdateInfo: true
 # Auto-update: installed apps poll GitHub Releases on this repo and download
 # new versions when published. Requires a GH_TOKEN env var (Personal Access
 # Token with `repo` scope) set when running `npm run release` so the

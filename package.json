@@ -9,10 +9,14 @@
     "dev:electron": "tsc -p electron/tsconfig.json && electron dist-electron/main.js",
     "build:renderer": "vite build",
     "build:electron": "tsc -p electron/tsconfig.json",
-    "build:python": "powershell -ExecutionPolicy Bypass -File scripts/build-python.ps1",
-    "build": "npm run build:renderer && npm run build:electron && npm run build:python",
-    "dist": "npm run build && electron-builder --win",
-    "release": "npm run build && electron-builder --win --publish always",
+    "build:python:win": "powershell -ExecutionPolicy Bypass -File scripts/build-python.ps1",
+    "build:python:mac": "bash scripts/build-python.sh",
+    "build:win": "npm run build:renderer && npm run build:electron && npm run build:python:win",
+    "build:mac": "npm run build:renderer && npm run build:electron && npm run build:python:mac",
+    "dist:win": "npm run build:win && electron-builder --win",
+    "dist:mac": "npm run build:mac && electron-builder --mac",
+    "release:win": "npm run build:win && electron-builder --win --publish always",
+    "release:mac": "npm run build:mac && electron-builder --mac --publish always",
     "start": "electron dist-electron/main.js"
   },
   "devDependencies": {
