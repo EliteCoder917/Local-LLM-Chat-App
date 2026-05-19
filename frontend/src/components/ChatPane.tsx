@@ -94,9 +94,24 @@ function WelcomeView() {
 function MessageList() {
   const messages = useStore((s) => (s.activeId ? s.conversations.find((c) => c.id === s.activeId)?.messages ?? [] : []));
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { ref.current?.scrollTo({ top: ref.current.scrollHeight }); }, [messages]);
+  // Stay pinned to the bottom unless the user scrolls up. Without this latch,
+  // every streamed token re-runs the messages effect and snaps the view back
+  // down — making it impossible to read earlier turns while the AI is typing.
+  const stuckToBottom = useRef(true);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (stuckToBottom.current) el.scrollTo({ top: el.scrollHeight });
+  }, [messages]);
+  function onScroll() {
+    const el = ref.current;
+    if (!el) return;
+    // 32px slack so the latch re-engages when you scroll most of the way back
+    // down (don't require pixel-perfect bottom).
+    stuckToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
+  }
   return (
-    <div ref={ref} className="flex-1 overflow-auto scroll">
+    <div ref={ref} onScroll={onScroll} className="flex-1 overflow-auto scroll">
       <div className="max-w-3xl mx-auto px-6 py-6">
         {messages.map((m) => <MessageBubble key={m.id} m={m} />)}
       </div>
@@ -709,10 +724,10 @@ const THINKING_OPTIONS: {
 /** Re-renders when modelStatus changes (so the picker appears/disappears
  *  when you switch models). */
 function useStoreThinking(): boolean {
-  // Subscribe to model identity so React re-runs thinkingSupported() when
-  // a different model loads.
-  useStore((s) => s.modelStatus.modelPath);
-  useStore((s) => s.libraryModels);
+  // Subscribe to the fields thinkingSupported() reads so React re-renders
+  // when a new model finishes loading and reports its capabilities.
+  useStore((s) => s.modelStatus.status);
+  useStore((s) => s.modelStatus.supportsThinking);
   return thinkingSupported();
 }
 

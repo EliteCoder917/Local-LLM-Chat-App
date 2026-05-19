@@ -133,7 +133,16 @@ export default function SettingsModal({ onClose }: Props) {
                 {settings.engine === 'llama-cpp' && (
                   <Section title="Runtime">
                     <ContextWindowField />
-                    <GpuOffloadField />
+                    {/* Apple Silicon uses Metal with unified memory — there's no
+                        separate VRAM pool to offload to, and the backend now
+                        auto-sizes layers from free RAM (see llama_cpp_engine.py).
+                        The slider would be misleading here, so hide it on Mac.
+                        Windows/Linux still see it. */}
+                    {!/Mac/i.test(
+                      (typeof navigator !== 'undefined'
+                        ? navigator.platform || navigator.userAgent
+                        : '')
+                    ) && <GpuOffloadField />}
                   </Section>
                 )}
 

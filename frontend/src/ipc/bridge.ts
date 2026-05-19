@@ -1,6 +1,10 @@
 // Renderer-side typed reference to the IPC bridge exposed by preload.
 
 export interface RendererApi {
+  // Backend URL chosen by main.ts (typically http://127.0.0.1:8765, but
+  // may shift to an OS-picked port if 8765 was held by a zombie process).
+  // Resolved at preload time via sync IPC so it's safe to read synchronously.
+  backendUrl: string;
   settings: {
     get: () => Promise<Record<string, unknown>>;
     set: (patch: Record<string, unknown>) => Promise<Record<string, unknown>>;
@@ -31,4 +35,6 @@ declare global {
 }
 
 export const api: RendererApi = window.api;
-export const BACKEND_HTTP = 'http://127.0.0.1:8765';
+// Fallback only matters in environments where the preload didn't run
+// (storybook, tests). In the real app `api.backendUrl` is always set.
+export const BACKEND_HTTP: string = api?.backendUrl ?? 'http://127.0.0.1:8765';

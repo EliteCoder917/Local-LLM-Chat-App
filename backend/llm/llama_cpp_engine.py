@@ -644,6 +644,12 @@ class LlamaCppEngine(LLMEngine):
         chat_handler = None
         self.vision_active = False
         self.vision_handler_name: Optional[str] = None
+        # Stash the text-only chat template (set BEFORE we possibly null it
+        # out for the vision handler) so the engine can fall back to the
+        # normal text path when a vision model is loaded but the current
+        # request has no images. Without this, every "yo"-style turn pays
+        # the full vision-wrapper cost (reset, re-eval, logits probe).
+        self._text_chat_format: Optional[str] = chat_format
         if CONFIG.mmproj_path and os.path.isfile(CONFIG.mmproj_path):
             main_arch = (read_gguf_meta(path).get("arch") or "").lower()
             mmproj_arch = (read_gguf_meta(CONFIG.mmproj_path).get("arch") or "").lower()
@@ -749,6 +755,12 @@ class LlamaCppEngine(LLMEngine):
                 self._llm._gen_abort = self._abort  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001
                 pass
+            # Think-token probe is deferred to first stream() — running it
+            # here against a freshly-constructed Llama on macOS/Python 3.14
+            # has been observed to raise BrokenPipeError out of llama.cpp's
+            # tokenizer logging, breaking load entirely. None = "not probed
+            # yet", [] = "probed, no token found".
+            self._think_token_ids: Optional[List[int]] = None
         except BaseException as e:  # noqa: BLE001 — covers native crashes
             tail = _tail(captured.get("text", ""), lines=40)
             ram_line = (
@@ -806,6 +818,25 @@ class LlamaCppEngine(LLMEngine):
     def _install_log_filter(self) -> None:
         """Install the per-process log filter once. Safe to call repeatedly."""
         _install_log_filter_once()
+
+    @property
+    def supports_thinking(self) -> bool:
+        """True if the loaded tokenizer has a `<think>` token. Lazily
+        probed — reads as False until `_ensure_think_probed()` has run,
+        which happens on the first stream() call. The status snapshot
+        therefore initially reports `supportsThinking: false` and flips
+        to true after the first turn for thinking-capable models."""
+        return bool(self._think_token_ids)
+
+    def _ensure_think_probed(self) -> None:
+        """Run the tokenizer probe once. No-op after first call. Wrapped
+        in a broad guard so a misbehaving tokenizer can't break chat."""
+        if self._think_token_ids is not None:
+            return
+        try:
+            self._think_token_ids = self._discover_think_token_ids()
+        except Exception:  # noqa: BLE001
+            self._think_token_ids = []
 
     def _discover_think_token_ids(self) -> List[int]:
         """Return the token IDs that open a Qwen-style `<think>` block.
@@ -1033,6 +1064,12 @@ class LlamaCppEngine(LLMEngine):
         # for vision turns.
         self._abort.clear()
 
+        # First-turn lazy probe of the model's `<think>` token. Runs once
+        # per engine lifetime; subsequent calls are O(1). Deferred from
+        # load to avoid a Python 3.14/macOS BrokenPipeError from
+        # llama.cpp's tokenizer logging during a fresh Llama() construction.
+        self._ensure_think_probed()
+
         # Logits processors chain:
         #   1. Abort processor — terminates llama.cpp mid-decode when Stop
         #      is clicked. Without it, the C-level loop runs until EOS and
@@ -1052,7 +1089,7 @@ class LlamaCppEngine(LLMEngine):
             processors = [_abort_processor]
 
             if CONFIG.thinking_mode == "quick":
-                think_ids = self._discover_think_token_ids()
+                think_ids = getattr(self, "_think_token_ids", None) or []
                 if think_ids:
                     sys.stderr.write(
                         f"[thinking] Quick mode: suppressing tokens {think_ids} "
@@ -1092,7 +1129,27 @@ class LlamaCppEngine(LLMEngine):
             except Exception:  # noqa: BLE001
                 pass
 
+        # When a vision model is loaded but THIS request has no images, swap
+        # the vision chat_handler out for the original text chat_format for
+        # the duration of the call. Without this, every text-only "yo"-style
+        # turn (even on a fresh chat) gets routed through mtmd → triggers
+        # the full reset + re-eval + post-mtmd logits probe — slow, noisy,
+        # and pointless when there's no image to project. Vision turns still
+        # go through the wrapper untouched.
+        bypass_vision = (
+            self.vision_active
+            and not has_image
+            and self._text_chat_format is not None
+        )
+
         def producer() -> None:
+            saved_handler = None
+            saved_format = None
+            if bypass_vision:
+                saved_handler = self._llm.chat_handler
+                saved_format = self._llm.chat_format
+                self._llm.chat_handler = None
+                self._llm.chat_format = self._text_chat_format
             try:
                 kwargs: Dict[str, object] = {
                     "messages": [{"role": m.role, "content": m.content} for m in messages],
@@ -1115,6 +1172,12 @@ class LlamaCppEngine(LLMEngine):
             except BaseException as e:  # noqa: BLE001
                 loop.call_soon_threadsafe(queue.put_nowait, e)
             finally:
+                if bypass_vision:
+                    # Restore the vision handler so the next image-bearing
+                    # turn re-engages it. Mutating these attrs on the live
+                    # Llama is safe — they're plain Python fields.
+                    self._llm.chat_handler = saved_handler
+                    self._llm.chat_format = saved_format
                 loop.call_soon_threadsafe(queue.put_nowait, None)
 
         asyncio.create_task(asyncio.to_thread(producer))

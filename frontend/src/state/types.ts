@@ -77,6 +77,9 @@ export interface ModelStatus {
   // the engine refuses vision rather than producing noise from a wrong handler.
   visionActive?: boolean;
   visionHandler?: string | null;  // class name, e.g. "Qwen25VLChatHandler"
+  // True only when the loaded tokenizer recognises a `<think>` token. Used
+  // to gate the Smart/Quick picker so it disappears on non-thinking models.
+  supportsThinking?: boolean;
 }
 
 export interface Settings {

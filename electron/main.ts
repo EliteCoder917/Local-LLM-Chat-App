@@ -1,10 +1,39 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { createServer, AddressInfo } from 'node:net';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { autoUpdater } from 'electron-updater';
 import { PythonBridge } from './python-bridge';
 import { PermissionManager } from './permissions';
 import { Store } from './store';
+
+/** Return a TCP port we can bind to on 127.0.0.1, trying `preferred` first.
+ *  Falls back to an OS-picked free port if `preferred` is held by a zombie
+ *  uvicorn from a previous dev session (common after Ctrl+C). The brief
+ *  unbind-before-spawn race is fine for a single-user local app — Python
+ *  binds the same port a few ms later and nothing else is fighting for it. */
+async function findFreePort(preferred: number): Promise<number> {
+  const tryBind = (port: number) =>
+    new Promise<number | null>((resolve) => {
+      const srv = createServer();
+      srv.unref();
+      srv.once('error', () => resolve(null));
+      srv.listen(port, '127.0.0.1', () => {
+        const got = (srv.address() as AddressInfo).port;
+        srv.close(() => resolve(got));
+      });
+    });
+  const first = await tryBind(preferred);
+  if (first != null) return first;
+  const fallback = await tryBind(0);
+  if (fallback == null) throw new Error('No free TCP port available on 127.0.0.1');
+  console.warn(`[bridge] port ${preferred} in use, using ${fallback} instead`);
+  return fallback;
+}
+
+// Holds the actual port we ended up spawning Python on, so the renderer can
+// read it via sync IPC at preload time. Set inside createWindow().
+let backendPort: number = 8765;
 
 // Pin the userData folder to the legacy product name so existing installs
 // (which wrote settings + conversations to %APPDATA%\Local AI IDE\) carry
@@ -24,13 +53,15 @@ async function createWindow() {
   store = new Store(path.join(app.getPath('userData'), 'settings.json'));
   perms = new PermissionManager(store);
 
+  backendPort = await findFreePort(8765);
+
   bridge = new PythonBridge({
     backendDir: isDev
       ? path.join(__dirname, '..', 'backend')
       : path.join(process.resourcesPath, 'backend'),
     pythonDist: isDev ? null : path.join(process.resourcesPath, 'python-dist'),
     projectRoot: isDev ? path.join(__dirname, '..') : process.resourcesPath,
-    port: 8765,
+    port: backendPort,
   });
   await bridge.start();
 
@@ -122,6 +153,14 @@ async function createWindow() {
 }
 
 // ─── IPC ──────────────────────────────────────────────────────────────
+// Sync handler used by preload to learn which port we picked. `ipcMain.on`
+// + `event.returnValue` makes `ipcRenderer.sendSync(...)` work, which lets
+// the renderer expose BACKEND_HTTP as a plain const instead of an async
+// getter (`fetch(`${BACKEND_HTTP}/...`)` is called from ~25 places).
+ipcMain.on('app:backendUrlSync', (e) => {
+  e.returnValue = `http://127.0.0.1:${backendPort}`;
+});
+
 ipcMain.handle('settings:get', () => store.all());
 ipcMain.handle('settings:set', (_e, patch: Record<string, unknown>) => {
   store.merge(patch);

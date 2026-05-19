@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
+// One-shot sync IPC at preload time. The renderer needs the backend's URL
+// before any fetch() runs, and we can't make BACKEND_HTTP an async getter
+// without refactoring ~25 call sites. sendSync here is a tolerable cost —
+// it fires exactly once during preload.
+const backendUrl: string = ipcRenderer.sendSync('app:backendUrlSync');
+
 const api = {
+  backendUrl,
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (patch: Record<string, unknown>) => ipcRenderer.invoke('settings:set', patch),

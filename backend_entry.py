@@ -9,6 +9,7 @@ the relative imports inside it resolve correctly.
 """
 from __future__ import annotations
 
+import argparse
 import uvicorn
 
 # Importing the package establishes `backend` as the parent for everything
@@ -17,10 +18,18 @@ from backend.main import app  # noqa: F401 — registers routes on `app`
 
 
 def main() -> None:
+    # `--port` is supplied by the Electron bridge, which picks a free port
+    # at startup (prefers 8765, falls back to an OS-assigned one if a zombie
+    # holds it). Default kept for the rare case the binary is launched
+    # directly, e.g. for ad-hoc debugging.
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8765)
+    args = parser.parse_args()
     uvicorn.run(
         "backend.main:app",
-        host="127.0.0.1",
-        port=8765,
+        host=args.host,
+        port=args.port,
         reload=False,
         log_level="info",
     )

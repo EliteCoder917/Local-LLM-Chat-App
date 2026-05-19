@@ -86,6 +86,11 @@ class ModelLoader:
         )
         vision_active = bool(getattr(self.engine, "vision_active", False))
         vision_handler = getattr(self.engine, "vision_handler_name", None)
+        # True only when the loaded tokenizer recognises a `<think>` token —
+        # i.e. the model can actually reason. Used by the UI to decide whether
+        # to show the Smart/Quick picker (hiding it for non-thinking models
+        # avoids the user injecting `/no_think` markers the model echoes back).
+        supports_thinking = bool(getattr(self.engine, "supports_thinking", False))
         return {
             "status": self.status,
             "message": self.message,
@@ -103,6 +108,7 @@ class ModelLoader:
             # see images.
             "visionActive": vision_active,
             "visionHandler": vision_handler,
+            "supportsThinking": supports_thinking,
         }
 
     def is_loaded(self) -> bool:

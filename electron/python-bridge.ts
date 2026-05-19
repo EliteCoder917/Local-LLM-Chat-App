@@ -27,8 +27,11 @@ export class PythonBridge extends EventEmitter {
     const exe = usingFrozen
       ? path.join(this.opts.pythonDist!, 'backend.exe')
       : (process.platform === 'win32' ? 'python' : 'python3');
+    // The frozen entry parses --port from argv (see backend_entry.py); the
+    // dev path passes it to uvicorn directly. Both honor the dynamically-
+    // picked port so 8765 being held by a zombie doesn't break startup.
     const args = usingFrozen
-      ? []
+      ? ['--port', String(this.opts.port)]
       : ['-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', String(this.opts.port)];
     const cwd = usingFrozen ? this.opts.pythonDist! : this.opts.projectRoot;
 

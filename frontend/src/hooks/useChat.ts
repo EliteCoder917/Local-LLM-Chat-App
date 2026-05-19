@@ -351,16 +351,14 @@ async function _sendCurrent() {
 }
 
 /** True if the currently loaded model recognises Qwen-style thinking
- *  toggles (`/think` and `/no_think`). Right now that's the Qwen3 family;
- *  we key off the GGUF arch so future variants (qwen3vl, qwen3.5moe, etc.)
- *  light up automatically. Other models hide the picker. */
+ *  toggles (`/think` and `/no_think`). Sourced from the backend, which
+ *  probes the actual tokenizer at load time for a `<think>` token — so
+ *  Qwen3 finetunes that stripped the special token (and Qwen-VL variants
+ *  that don't think) correctly hide the picker, and any future thinking
+ *  family lights up automatically without code changes. */
 export function thinkingSupported(): boolean {
   const s = useStore.getState();
-  const loadedId = s.modelStatus.modelPath?.split(/[\\/]/).pop() ?? '';
-  const entry = s.libraryModels.find((m) => m.id === loadedId);
-  const arch = (entry?.arch ?? '').toLowerCase();
-  const filename = loadedId.toLowerCase();
-  return arch.includes('qwen3') || filename.includes('qwen3');
+  return s.modelStatus.status === 'loaded' && !!s.modelStatus.supportsThinking;
 }
 
 /** Returns the suffix to append to a user message to bias the model's
