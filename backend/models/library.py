@@ -20,10 +20,11 @@ from ..llm.gguf_meta import read_gguf_meta
 
 
 def _is_mmproj(name: str) -> bool:
-    """A multimodal projector / CLIP companion. Always starts with 'mmproj'
-    in every quant publisher's convention I've seen (bartowski, ggml-org,
-    Mozilla LLamafile, etc.)."""
-    return name.lower().startswith("mmproj")
+    """A multimodal projector / CLIP companion. Bartowski / ggml-org / Mozilla
+    LLamafile use the `mmproj-*` prefix; some HF mirrors and other publishers
+    use a suffix style instead (e.g. `Qwen2-VL-7B-mmproj-f16.gguf`,
+    `Llama-3.2-Vision.mmproj.gguf`), so match the token anywhere in the stem."""
+    return "mmproj" in name.lower()
 
 
 def _strip_quant_suffix(stem: str) -> str:

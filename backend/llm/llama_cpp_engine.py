@@ -536,8 +536,45 @@ class LlamaCppEngine(LLMEngine):
         total_layers = int(meta.get("block_count") or 32) + 1
         gb_per_layer = size_gb / total_layers
 
+        # Apple Silicon uses Metal with a unified memory pool — there's no
+        # separate VRAM to budget against, but the Metal command-buffer
+        # allocator has a per-process ceiling well below total RAM. Full
+        # offload of a 5 GB+ vision model on a 16 GB MacBook Air pushes that
+        # ceiling and dies with
+        #   `kIOGPUCommandBufferCallbackErrorOutOfMemory`
+        # mid-image-decode. So instead of forcing all layers to Metal we
+        # compute a safe layer count from free system RAM, leaving extra
+        # headroom for the Metal compute graph (especially for vision —
+        # mtmd's image batch eval rebuilds the graph per image).
+        is_apple_silicon = sys.platform == "darwin"
+        will_be_vision = bool(
+            CONFIG.mmproj_path and os.path.isfile(CONFIG.mmproj_path)
+        )
+
         offload_gb_req = max(0.0, float(CONFIG.gpu_offload_gb))
-        if offload_gb_req >= size_gb:
+        if is_apple_silicon:
+            avail_now_gb, _ = _ram_gb()
+            # Headroom reserved for: KV cache + Metal compute graph +
+            # image-batch graph (vision only) + Electron + OS.
+            metal_headroom_gb = 5.0 if will_be_vision else 3.0
+            usable_for_offload = max(0.0, (avail_now_gb or 8.0) - metal_headroom_gb)
+            # Cap by what the user asked for. Slider==0 means "auto" on Mac:
+            # offload whatever fits inside the headroom budget.
+            target_offload_gb = (
+                min(size_gb, usable_for_offload) if offload_gb_req <= 0
+                else min(offload_gb_req, usable_for_offload)
+            )
+            if target_offload_gb >= size_gb - gb_per_layer:
+                n_gpu_layers = -1
+                offload_gb = size_gb
+            elif target_offload_gb <= 0:
+                n_gpu_layers = 0
+                offload_gb = 0.0
+            else:
+                n_gpu_layers = max(1, int(round(target_offload_gb / gb_per_layer)))
+                n_gpu_layers = min(n_gpu_layers, total_layers - 1)
+                offload_gb = n_gpu_layers * gb_per_layer
+        elif offload_gb_req >= size_gb:
             n_gpu_layers = -1                          # all layers
             offload_gb = size_gb
         elif offload_gb_req <= 0:
@@ -547,18 +584,33 @@ class LlamaCppEngine(LLMEngine):
             n_gpu_layers = max(1, int(round(offload_gb_req / gb_per_layer)))
             n_gpu_layers = min(n_gpu_layers, total_layers - 1)
             offload_gb = n_gpu_layers * gb_per_layer
-        cpu_gb = max(0.0, size_gb - offload_gb)
+        cpu_gb = 0.0 if is_apple_silicon else max(0.0, size_gb - offload_gb)
 
         # ---- Memory pre-check (now accounts for GPU offload) ----
         avail_gb, total_gb = _ram_gb()
-        gpus = detect_nvidia_gpus()
+        gpus = [] if is_apple_silicon else detect_nvidia_gpus()
         # Pick the GPU with most free VRAM (or None).
         gpu = max(gpus, key=lambda g: g["free_gb"]) if gpus else None
         gpu_free = float(gpu["free_gb"]) if gpu else 0.0
 
-        ram_budget = cpu_gb * 1.10 + 1.2          # weights on CPU + compute buf + KV cache + py overhead
+        if is_apple_silicon:
+            # Unified memory: weights + KV + compute all share system RAM.
+            ram_budget = size_gb * 1.10 + 1.2
+        else:
+            ram_budget = cpu_gb * 1.10 + 1.2      # weights on CPU + compute buf + KV cache + py overhead
         vram_budget = offload_gb * 1.10 + 0.5     # offloaded layers + GPU KV slice
         if avail_gb is not None and avail_gb < ram_budget:
+            if is_apple_silicon:
+                raise RuntimeError(
+                    "Not enough free system RAM to load this model.\n\n"
+                    f"Model:         {size_gb:.1f} GB\n"
+                    f"RAM need:      {ram_budget:.1f} GB\n"
+                    f"RAM available: {avail_gb:.1f} GB"
+                    + (f" / {total_gb:.1f} GB total" if total_gb else "") + "\n\n"
+                    "Pick a smaller quant or close other apps. (Apple Silicon "
+                    "uses unified memory, so the GPU-offload slider has no "
+                    "separate budget — the whole model lives in system RAM.)"
+                )
             raise RuntimeError(
                 "Not enough free system RAM for this configuration.\n\n"
                 f"Model:           {size_gb:.1f} GB\n"
@@ -654,11 +706,18 @@ class LlamaCppEngine(LLMEngine):
                 # INSTRUCTION at sample time); vision needs it badly enough to
                 # accept that risk.
                 flash_attn = chat_handler is not None
+                # Smaller batch on Apple Silicon vision: each image batch
+                # rebuilds the Metal compute graph at a topology dependent
+                # on n_batch. 512 blows the GPU command-buffer ceiling on
+                # 16 GB Macs (`kIOGPUCommandBufferCallbackErrorOutOfMemory`).
+                # 128 trades a bit of image-encode latency for a graph that
+                # actually fits.
+                n_batch = 128 if (is_apple_silicon and chat_handler is not None) else 512
                 self._llm = Llama(
                     model_path=path,
                     n_ctx=n_ctx,
                     n_threads=n_threads,
-                    n_batch=512,
+                    n_batch=n_batch,
                     n_gpu_layers=n_gpu_layers,
                     use_mmap=True,
                     use_mlock=False,
