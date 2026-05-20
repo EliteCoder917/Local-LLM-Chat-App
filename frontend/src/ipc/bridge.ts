@@ -26,6 +26,13 @@ export interface RendererApi {
     cancel: () => Promise<unknown>;
     onEvent: (cb: (e: unknown) => void) => () => void;
   };
+  window: {
+    minimize: () => void;
+    maximize: () => void;
+    close: () => void;
+    isMaximized: () => boolean;
+    onMaximizedChange: (cb: (maximized: boolean) => void) => () => void;
+  };
 }
 
 declare global {

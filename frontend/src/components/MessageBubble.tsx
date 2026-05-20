@@ -20,11 +20,18 @@ function SentAttachment({ a }: { a: Attachment }) {
 
   if (a.kind === 'image') {
     if (!a.dataUri) {
-      // Edge case: attachment metadata without data — show a friendly placeholder.
+      // Attachment metadata persists but the dataUri was stripped — either
+      // the user attached metadata without data, or compaction GC'd it to
+      // recover localStorage. The summary message above will reference what
+      // was shown so the conversation context isn't lost.
       return (
-        <div className="rounded-2xl border bd-strong bg-side w-32 h-32 flex flex-col items-center justify-center text-[11px] text-[var(--fg-dim)]">
+        <div
+          className="rounded-2xl border bd-strong bg-side w-32 h-32 flex flex-col items-center justify-center text-[11px] text-[var(--fg-dim)] px-2 text-center"
+          title={`${a.name} — image data removed during compaction; the summary above describes what was shown`}
+        >
           <FileText className="w-5 h-5 mb-1" />
-          (image missing)
+          <div className="leading-tight">{a.name}</div>
+          <div className="opacity-70 mt-0.5">removed by compaction</div>
         </div>
       );
     }

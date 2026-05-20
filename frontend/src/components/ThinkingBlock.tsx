@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Brain, ChevronDown, ChevronRight } from 'lucide-react';
 import Markdown from './Markdown';
 import { roughTokens } from '../lib/parseThinking';
@@ -9,13 +9,11 @@ interface Props {
 }
 
 export default function ThinkingBlock({ content, streaming }: Props) {
+  // Always starts collapsed, and is always toggleable — including mid-stream.
+  // The old code auto-expanded while streaming and ignored the user's click
+  // to collapse, which dumped reasoning text all over the screen by default.
   const [open, setOpen] = useState(false);
-  const [autoExpanded, setAutoExpanded] = useState(true);
-  useEffect(() => {
-    if (!streaming && autoExpanded) setAutoExpanded(false);
-  }, [streaming, autoExpanded]);
-
-  const expanded = open || (streaming && autoExpanded);
+  const expanded = open;
   const tokens = roughTokens(content);
 
   return (

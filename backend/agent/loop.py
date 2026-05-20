@@ -135,12 +135,17 @@ class AgentRunner:
             # so the user knows what happened and can retry / shorten the
             # conversation instead of staring at a blank screen.
             if delta_count == 0 and not assistant_text:
+                # Honest message — the most common cause is the model sampling
+                # the end-of-turn token on the first step (random sampling
+                # variance, or aggressive fine-tunes biased toward brevity
+                # in /no_think mode). Context overflow is RARE and we used
+                # to blame that misleadingly; now we name the likely cause
+                # and suggest the most useful action.
                 hint = (
-                    "_(no response — the model emitted no tokens. "
-                    "This usually means the conversation is too long for the "
-                    "model's attention to follow, or it sampled the end-of-turn "
-                    "token first. Try sending the message again, rephrasing, "
-                    "or starting a new chat to clear context.)_"
+                    "_(no reply — the model produced no output this turn. "
+                    "This sometimes happens in **Quick** mode with fine-tunes "
+                    "trained for brief answers. Try sending the message "
+                    "again, switching to **Smart** mode, or rephrasing.)_"
                 )
                 await self._emit({
                     "type": "message-delta",

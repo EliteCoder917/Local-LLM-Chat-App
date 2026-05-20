@@ -31,6 +31,20 @@ const api = {
       return () => ipcRenderer.removeListener('llm:event', fn);
     },
   },
+  // Custom title bar (we removed the native frame). The renderer's title bar
+  // calls these to drive minimize / maximize / close, and subscribes to
+  // window:maximized events so its icon swaps without polling.
+  window: {
+    minimize:    () => ipcRenderer.send('window:minimize'),
+    maximize:    () => ipcRenderer.send('window:maximize'),
+    close:       () => ipcRenderer.send('window:close'),
+    isMaximized: (): boolean => ipcRenderer.sendSync('window:isMaximizedSync'),
+    onMaximizedChange: (cb: (maximized: boolean) => void) => {
+      const fn = (_: unknown, v: boolean) => cb(v);
+      ipcRenderer.on('window:maximized', fn);
+      return () => ipcRenderer.removeListener('window:maximized', fn);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('api', api);

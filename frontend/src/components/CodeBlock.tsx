@@ -6,9 +6,13 @@ import InlineDiff from './InlineDiff';
 
 interface Props {
   language: string;
+  /** Raw source text — backs Copy + Apply. */
   code: string;
   /** className from react-markdown's `code` element (carries hljs-* tokens). */
   className?: string;
+  /** Token-coloured children from rehypeHighlight. When supplied, rendered
+   *  in place of `{code}` so highlight.js classes actually paint the source. */
+  highlighted?: React.ReactNode;
 }
 
 const LANG_TO_EXT: Record<string, string[]> = {
@@ -39,7 +43,7 @@ function langMatchesFile(lang: string, path: string | null): boolean {
   return !!exts && exts.includes(ext);
 }
 
-export default function CodeBlock({ language, code, className }: Props) {
+export default function CodeBlock({ language, code, className, highlighted }: Props) {
   const { tab, openFile, openFileContent, setOpenFile } = useStore();
   const [copied, setCopied] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
@@ -97,7 +101,7 @@ export default function CodeBlock({ language, code, className }: Props) {
       </div>
 
       <pre className="overflow-auto scroll text-[12.5px] mono leading-relaxed p-3">
-        <code className={className}>{code}</code>
+        <code className={className}>{highlighted ?? code}</code>
       </pre>
 
       {showDiff && openFile && (

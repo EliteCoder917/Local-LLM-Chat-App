@@ -26,19 +26,24 @@
    'F:\\AI chat app\\build-python\\backend\\localpycs\\pyimod04_pywin32.pyc',
    'PYMODULE'),
   ('pyiboot01_bootstrap',
-   'C:\\Users\\tommy\\miniconda3\\Lib\\site-packages\\PyInstaller\\loader\\pyiboot01_bootstrap.py',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\PyInstaller\\loader\\pyiboot01_bootstrap.py',
    'PYSOURCE'),
   ('pyi_rth_pkgutil',
-   'C:\\Users\\tommy\\miniconda3\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_pkgutil.py',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_pkgutil.py',
    'PYSOURCE'),
   ('pyi_rth_multiprocessing',
-   'C:\\Users\\tommy\\miniconda3\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_multiprocessing.py',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_multiprocessing.py',
    'PYSOURCE'),
   ('pyi_rth_inspect',
-   'C:\\Users\\tommy\\miniconda3\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_inspect.py',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_inspect.py',
    'PYSOURCE'),
-  ('pyi_rth_cryptography_openssl',
-   'C:\\Users\\tommy\\miniconda3\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks\\pyi_rth_cryptography_openssl.py',
+  ('pyi_rth_setuptools',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_setuptools.py',
    'PYSOURCE'),
   ('backend_entry', 'F:\\AI chat app\\backend_entry.py', 'PYSOURCE')],
  'python312.dll',

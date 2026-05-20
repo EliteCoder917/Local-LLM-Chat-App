@@ -6,6 +6,7 @@ import CodePane from './CodePane';
 import SettingsModal from './SettingsModal';
 import ModelPicker from './ModelPicker';
 import ModelLibrary from './ModelLibrary';
+import TitleBar from './TitleBar';
 import { useStore } from '../state/store';
 
 export default function Layout() {
@@ -13,8 +14,10 @@ export default function Layout() {
   const { tab, setTab } = useStore();
 
   return (
-    <div className="h-screen w-screen flex bg-app text-[var(--fg)] overflow-hidden">
-      <Sidebar onOpenSettings={() => setSettingsOpen(true)} />
+    <div className="h-screen w-screen flex flex-col bg-app text-[var(--fg)] overflow-hidden">
+      <TitleBar />
+      <div className="flex-1 flex min-h-0">
+        <Sidebar onOpenSettings={() => setSettingsOpen(true)} />
 
       <main className="flex-1 flex flex-col min-w-0">
         <div className="h-12 flex items-center px-3 select-none gap-1 border-b bd-soft">
@@ -39,6 +42,7 @@ export default function Layout() {
           {tab === 'chat' ? <ChatPane /> : <CodePane />}
         </div>
       </main>
+      </div>
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
       <ModelLibrary />

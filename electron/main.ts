@@ -80,6 +80,19 @@ async function createWindow() {
     backgroundColor: '#171717',
     title: 'Local AI Studio',
     autoHideMenuBar: true,
+    // Hide the native OS title bar and let the React renderer draw its own
+    // chrome — keeps the window blending with the app's dark theme instead
+    // of the bright Windows / macOS frame. macOS still draws traffic lights
+    // at the top-left because `titleBarStyle: 'hidden'` only hides the bar
+    // itself, not the system buttons (which is what we want — they have
+    // OS-level accessibility shortcuts).
+    //
+    // We deliberately do NOT set `titleBarOverlay`: that flag asks Windows
+    // to overlay its OWN min/max/close buttons on the renderer, which would
+    // fight with our custom React buttons (you'd see double controls plus
+    // the system-accent border that Windows draws around them).
+    frame: false,
+    titleBarStyle: 'hidden',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -114,6 +127,11 @@ async function createWindow() {
     const granted = await perms.requestInteractive(win!, req);
     bridge.sendPermissionResponse(req.id, granted);
   });
+
+  // Forward maximize state changes to the renderer so the custom title bar
+  // can swap its maximize/restore icon without polling.
+  win.on('maximize',   () => win?.webContents.send('window:maximized', true));
+  win.on('unmaximize', () => win?.webContents.send('window:maximized', false));
 
   // Auto-update wiring — only in packaged builds. In dev there's no
   // installer to replace and the GitHub release polling would just spam
@@ -167,6 +185,18 @@ async function createWindow() {
 ipcMain.on('app:backendUrlSync', (e) => {
   e.returnValue = `http://127.0.0.1:${backendPort}`;
 });
+
+// Window control IPC — the custom React title bar drives these because we
+// hid the native frame. Each one is a no-op if there's no window yet.
+ipcMain.on('window:minimize',  () => win?.minimize());
+ipcMain.on('window:maximize',  () => {
+  if (!win) return;
+  if (win.isMaximized()) win.unmaximize(); else win.maximize();
+});
+ipcMain.on('window:close',     () => win?.close());
+// Renderer asks once at mount to sync its maximize-icon state with reality
+// (e.g. after a snap-resize the OS performed without going through us).
+ipcMain.on('window:isMaximizedSync', (e) => { e.returnValue = !!win?.isMaximized(); });
 
 ipcMain.handle('settings:get', () => store.all());
 ipcMain.handle('settings:set', (_e, patch: Record<string, unknown>) => {

@@ -299,7 +299,7 @@ function ToggleRow({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="space-y-1.5">
       <div className="text-[11.5px] text-[var(--fg-muted)]">{label}</div>
@@ -442,15 +442,36 @@ function LibraryShortcut() {
 }
 
 /**
- * Rough KV-cache size estimate, in GB.
- * Real formula: 2 (K+V) * n_layers * n_ctx * n_kv_heads * head_dim * dtype_bytes.
- * We don't know head dims here, so use a hand-tuned constant calibrated against
- * Llama-3 8B (~0.5 GB at 8K) and Llama-3 70B (~5 GB at 8K). Close enough to
- * keep the slider from over-promising VRAM.
+ * Accurate KV-cache size estimate in GB.
+ * Real formula: 2 (K+V) × n_layers × n_ctx × n_kv_heads × head_dim × dtype_bytes.
+ *
+ * Reads head_count_kv and rope_dim from the GGUF metadata when available
+ * (which gives a 2-3× more accurate number on GQA models like Qwen3-MoE,
+ * where the old constant under-estimated significantly). Falls back to
+ * the hand-tuned constant when those fields aren't present.
+ *
+ * `dtypeBytes` defaults to 2 (FP16). Llama.cpp uses FP16 KV by default;
+ * some builds use BF16 which is also 2 bytes; INT8 KV cache (rare) would
+ * be 1 byte but we don't probe for that.
  */
-function estimateKvCacheGb(nCtx: number, blockCount: number): number {
+function estimateKvCacheGb(
+  nCtx: number,
+  blockCount: number,
+  info?: SystemInfo | null,
+  dtypeBytes: number = 2,
+): number {
+  const model = info?.model;
+  const headDim = model?.ropeDim
+    ?? (model?.embeddingLength && model?.headCount
+        ? Math.floor(model.embeddingLength / model.headCount)
+        : 0);
+  const kvHeads = model?.headCountKv ?? model?.headCount ?? 0;
+  if (headDim > 0 && kvHeads > 0 && blockCount > 0) {
+    const bytes = 2 * blockCount * nCtx * kvHeads * headDim * dtypeBytes;
+    return bytes / (1024 ** 3);
+  }
+  // Fallback hand-tuned constant for when GGUF metadata is incomplete.
   return (nCtx / 1024) * blockCount * 0.0001 * 16;
-  // ~ 0.0016 GB per (1K ctx * layer). For a 32-layer model at 4K → 0.2 GB; at 32K → 1.6 GB.
 }
 
 function fetchSystemInfo(modelPath: string): Promise<SystemInfo | null> {
@@ -460,12 +481,15 @@ function fetchSystemInfo(modelPath: string): Promise<SystemInfo | null> {
 
 function useSystemInfo() {
   const modelPath = useStore((s) => s.settings.modelPath);
+  // Also refetch when the model loads or unloads — VRAM free shifts by gigabytes
+  // and the panel was showing pre-eject numbers because the deps array missed it.
+  const status = useStore((s) => s.modelStatus.status);
   const [info, setInfo] = useState<SystemInfo | null>(null);
   useEffect(() => {
     let cancelled = false;
     fetchSystemInfo(modelPath).then((j) => { if (!cancelled) setInfo(j); });
     return () => { cancelled = true; };
-  }, [modelPath]);
+  }, [modelPath, status]);
   return info;
 }
 
@@ -479,7 +503,7 @@ function ContextWindowField() {
   // 262144 (256K) for sanity.
   const sliderMax = Math.min(262144, Math.max(32768, trained || 32768));
   const value = Math.min(settings.nCtx, sliderMax);
-  const kvGb = estimateKvCacheGb(value, blockCount);
+  const kvGb = estimateKvCacheGb(value, blockCount, info);
   const kvWarn = kvGb > 8;
   return (
     <Field
@@ -525,14 +549,20 @@ function GpuOffloadField() {
   // track because HTML range inputs render the thumb as a percentage of
   // track length, and the track length here depends on n_ctx via safeMax.
   // The saved VALUE doesn't change — only the visual percentage does.
-  const kvReserve = estimateKvCacheGb(settings.nCtx || 4096, blockCount);
+  const kvReserve = estimateKvCacheGb(settings.nCtx || 4096, blockCount, info);
   const gpuFree = gpu?.free_gb ?? 0;
   const STEP = 0.1;
+  // `safeMax` is the maximum offload the math says will fit alongside the
+  // KV cache + a 0.7 GB compute-buffer headroom + a 10% safety slack.
   const safeMax = gpu != null
     ? Math.max(0, Math.min(modelSize || 100, (gpuFree - kvReserve - 0.7) / 1.10))
     : (modelSize || 100);
   const sliderMax = Math.max(STEP, Math.floor(safeMax / STEP) * STEP);
-  const value = Math.min(settings.gpuOffloadGb, sliderMax);
+  // Auto mode: gpuOffloadGb sentinel of -1 means "let the app pick the
+  // max fittable value at load time." We display the computed safeMax
+  // as the effective value and disable the slider while auto is on.
+  const isAuto = settings.gpuOffloadGb < 0;
+  const value = isAuto ? sliderMax : Math.min(settings.gpuOffloadGb, sliderMax);
   const resolvedLayers =
     value >= modelSize && modelSize > 0
       ? blockCount + 1
@@ -547,11 +577,29 @@ function GpuOffloadField() {
   return (
     <Field
       label={
-        value <= 0
-          ? 'GPU offload — CPU only'
-          : value >= modelSize && modelSize > 0
-          ? `GPU offload — full model on GPU (${blockCount + 1} layers)`
-          : `GPU offload — ${value.toFixed(1)} GB (${resolvedLayers} of ${blockCount + 1} layers)`
+        <div className="flex items-center justify-between gap-2">
+          <span>
+            {value <= 0
+              ? 'GPU offload — CPU only'
+              : value >= modelSize && modelSize > 0
+              ? `GPU offload — full model on GPU (${blockCount + 1} layers)`
+              : `GPU offload — ${value.toFixed(1)} GB (${resolvedLayers} of ${blockCount + 1} layers)`}
+            {isAuto && <span className="ml-2 text-[10px] text-emerald-400 uppercase tracking-wide">auto</span>}
+          </span>
+          <button
+            onClick={() => setSettings({ gpuOffloadGb: isAuto ? value : -1 })}
+            className={`text-[10.5px] px-2 py-0.5 rounded border transition ${
+              isAuto
+                ? 'bg-emerald-700/30 border-emerald-700/60 text-emerald-300 hover:bg-emerald-700/50'
+                : 'bd-soft text-[var(--fg-muted)] hover:text-[var(--fg)] hover:bd-strong'
+            }`}
+            title={isAuto
+              ? 'Currently auto-sizing offload to fit available VRAM. Click to fix at the current value and use the slider.'
+              : 'Auto-size offload to maximum that fits alongside KV-cache and compute buffer.'}
+          >
+            {isAuto ? 'Auto on' : 'Auto'}
+          </button>
+        </div>
       }
     >
       <input
@@ -560,8 +608,9 @@ function GpuOffloadField() {
         max={sliderMax}
         step={STEP}
         value={value}
+        disabled={isAuto}
         onChange={(e) => setSettings({ gpuOffloadGb: parseFloat(e.target.value) })}
-        className="slim w-full"
+        className={`slim w-full ${isAuto ? 'opacity-60 pointer-events-none' : ''}`}
       />
 
       <div className="mt-1.5 text-[11px] text-[var(--fg-muted)] space-y-1">

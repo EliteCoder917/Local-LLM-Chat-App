@@ -187,8 +187,20 @@ class ModelLoader:
 
     def _reset_engine(self) -> None:
         # Drop reference so the underlying Llama (heavy native object) is freed.
+        # CUDA buffers don't get released until the Llama object actually goes
+        # away — so we call its `close()` (if the engine exposes one) and force
+        # a GC pass before returning. Without this, VRAM stays pinned until the
+        # next load, which the GPU panel reflects as "0 GB free".
+        engine = self.engine
+        if engine is not None:
+            close = getattr(engine, "close", None)
+            if callable(close):
+                try: close()
+                except Exception: pass  # noqa: BLE001
         self.engine = None
         self.engine_key = None
+        import gc
+        gc.collect()
 
     def get(self) -> LLMEngine:
         if not self.is_loaded():

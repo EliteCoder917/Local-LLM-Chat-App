@@ -24,7 +24,7 @@ class Config:
     model_path: str = ""
     temperature: float = 0.7
     n_ctx: int = 4096           # context window for llama-cpp engine
-    gpu_offload_gb: float = 0.0  # how much of the model to put on GPU VRAM
+    gpu_offload_gb: float = -1.0  # -1 = Auto; engine picks max fittable at load
     system_prompt: str = (
         "You are a helpful local AI assistant. Be concise and accurate."
     )

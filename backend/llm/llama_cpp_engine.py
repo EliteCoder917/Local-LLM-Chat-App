@@ -338,38 +338,42 @@ def _sample_from_current_state(
         eos_banned = False
         abort_event = getattr(llama, "_gen_abort", None)
 
-        # Quick mode: pre-fill a think block into the KV cache with a brief
-        # decision-instruction rather than leaving it empty.
+        # Quick mode: "thinking budget" approach.
+        # ---------------------------------------
+        # We DON'T pre-fill the think block any more — that just triggered the
+        # fine-tune's "/no_think = be terse" trained reflex and produced one-
+        # word replies. Instead we let the model think naturally (no broken
+        # behavior path is hit), but we cap how many tokens it spends inside
+        # `<think>...</think>`. Once the budget is exhausted we force-close
+        # the block by eval'ing `</think>\n\n` directly and the model has to
+        # start answering.
         #
-        # Why content instead of empty: Qwen3's official chat template uses
-        # an empty `<think>\n\n</think>\n\n` prefill for `enable_thinking=False`.
-        # That works for base Qwen3 but for aggressive fine-tunes (e.g.
-        # HauhauCS's uncensored variant) the empty prefill also triggers the
-        # "be terse" pattern those fine-tunes were trained on — producing
-        # zero-token or single-line replies. Putting a short decision-line
-        # in the think block gives the model semantic context ("I've already
-        # decided to write a proper reply") without re-engaging full
-        # reasoning. The TTFT is still fast and reasoning is still skipped,
-        # but the model produces normal-length output.
+        # Why this works where prefill didn't: the model's NATURAL thinking
+        # path was always working fine (that's how Smart mode produces good
+        # answers). We're not redirecting the model into the broken /no_think
+        # branch — we're just limiting it on the working branch.
         quick_mode = CONFIG.thinking_mode == "quick"
-        # Tiny safety net only — covers the rare "first sampled token is EOS"
-        # lottery loss, not a sledgehammer over the model's natural stopping.
-        eos_ban_window = 1 if quick_mode else 0
+        eos_ban_window = 1 if quick_mode else 0  # safety net for sampling lottery
+        think_budget = 100  # max tokens before we force-close any open thinking
+        close_prefill: list[int] = []
+        # We detect natural close by scanning the DECODED text for the literal
+        # `</think>` (or `<|think_end|>`) marker, not by token-ID matching.
+        # The old token-ID approach false-positived because `</think>` is often
+        # a multi-token sequence whose first token is `<` (a very common
+        # character) — that made the budget think the close had already
+        # happened the moment the model emitted any `<`, and never enforced.
+        think_closed_seen = False
         if quick_mode:
             try:
-                prefill = llama.tokenize(
-                    b"<think>\nNo extended reasoning needed; answering directly.\n</think>\n\n",
-                    add_bos=False, special=True,
+                close_prefill = llama.tokenize(
+                    b"\n</think>\n\n", add_bos=False, special=True,
                 )
-                if prefill:
-                    llama.eval(prefill)
-                    _vlog(
-                        f"[thinking] Quick (vision path): pre-filled think "
-                        f"block with decision-line ({len(prefill)} tokens), "
-                        "EOS first-token safety net only.\n"
-                    )
+                _vlog(
+                    f"[thinking] Quick (vision path): thinking budget = {think_budget} "
+                    "tokens (text-based close detection).\n"
+                )
             except Exception as e:  # noqa: BLE001
-                _vlog(f"[thinking] Quick pre-fill failed (non-fatal): {e}\n")
+                _vlog(f"[thinking] Quick setup failed (non-fatal): {e}\n")
 
         while generated_count < max_n:
             # User clicked Stop — break the sampling loop so the next prompt
@@ -422,6 +426,42 @@ def _sample_from_current_state(
             piece = llama.detokenize([tok])
             generated_text += piece
             generated_count += 1
+
+            # Detect natural close by SCANNING the generated text for the
+            # literal `</think>` (or `<|think_end|>`) marker. This is robust
+            # even when the marker tokenizes as multiple tokens — the bytes
+            # always appear in the decoded output regardless of how the
+            # tokenizer split them.
+            if quick_mode and not think_closed_seen:
+                try:
+                    text_so_far = generated_text.decode("utf-8", errors="ignore")
+                    if "</think>" in text_so_far or "<|think_end|>" in text_so_far:
+                        think_closed_seen = True
+                        _vlog(
+                            f"[thinking] Quick: model closed think block naturally "
+                            f"at token {generated_count} (under {think_budget} budget).\n"
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
+            # Budget exhausted before the model closed </think> on its own —
+            # inject the close marker directly. The model never gets to keep
+            # thinking past this point; its next sample is for the answer.
+            if quick_mode and not think_closed_seen and generated_count >= think_budget and close_prefill:
+                try:
+                    llama.eval(close_prefill)
+                    close_bytes = llama.detokenize(close_prefill)
+                    pending += close_bytes
+                    generated_text += close_bytes
+                    generated_count += len(close_prefill)
+                    think_closed_seen = True
+                    _vlog(
+                        f"[thinking] Quick: budget ({think_budget}) hit at "
+                        f"token {generated_count} — injected </think> close, "
+                        f"model continues with answer.\n"
+                    )
+                except Exception as e:  # noqa: BLE001
+                    _vlog(f"[thinking] budget-close inject failed: {e}\n")
             # Stop-string match (rough — only checks the recent suffix).
             if stop_strs:
                 tail = generated_text.decode("utf-8", errors="replace")
@@ -563,17 +603,24 @@ class LlamaCppEngine(LLMEngine):
             CONFIG.mmproj_path and os.path.isfile(CONFIG.mmproj_path)
         )
 
-        offload_gb_req = max(0.0, float(CONFIG.gpu_offload_gb))
+        # The frontend sends a sentinel of -1 to mean "auto-pick the largest
+        # offload that fits alongside the KV cache and compute buffer on the
+        # currently-available GPU." We compute that at load time using fresh
+        # GPU + GGUF metadata (rather than at slider-edit time on the
+        # frontend, where it'd go stale).
+        raw_offload = float(CONFIG.gpu_offload_gb)
+        auto_offload = raw_offload < 0
+        offload_gb_req = max(0.0, raw_offload)
         if is_apple_silicon:
             avail_now_gb, _ = _ram_gb()
             # Headroom reserved for: KV cache + Metal compute graph +
             # image-batch graph (vision only) + Electron + OS.
             metal_headroom_gb = 5.0 if will_be_vision else 3.0
             usable_for_offload = max(0.0, (avail_now_gb or 8.0) - metal_headroom_gb)
-            # Cap by what the user asked for. Slider==0 means "auto" on Mac:
-            # offload whatever fits inside the headroom budget.
+            # Cap by what the user asked for. Slider==0 OR sentinel<0 both
+            # mean "auto" on Mac: offload whatever fits inside headroom.
             target_offload_gb = (
-                min(size_gb, usable_for_offload) if offload_gb_req <= 0
+                min(size_gb, usable_for_offload) if (offload_gb_req <= 0 or auto_offload)
                 else min(offload_gb_req, usable_for_offload)
             )
             if target_offload_gb >= size_gb - gb_per_layer:
@@ -584,6 +631,43 @@ class LlamaCppEngine(LLMEngine):
                 offload_gb = 0.0
             else:
                 n_gpu_layers = max(1, int(round(target_offload_gb / gb_per_layer)))
+                n_gpu_layers = min(n_gpu_layers, total_layers - 1)
+                offload_gb = n_gpu_layers * gb_per_layer
+        elif auto_offload:
+            # Compute the largest offload that fits the VRAM budget:
+            #   free_vram >= offload * 1.10 + kv_cache + compute_buffer_safety
+            # ⇒ offload <= (free_vram - kv_cache - 0.7) / 1.10
+            #
+            # Uses the same `estimate_kv_cache_gb` we expose on /system/info,
+            # so the value matches what the slider's UI shows as the safe max.
+            from .gguf_meta import estimate_kv_cache_gb as _kv_est
+            kv_cache = _kv_est(
+                n_ctx=int(CONFIG.n_ctx) if CONFIG.n_ctx else DEFAULT_N_CTX,
+                block_count=total_layers - 1,
+                head_count_kv=int(meta.get("head_count_kv") or 0),
+                rope_dim=int(meta.get("rope_dimension_count") or 0),
+                embedding_length=int(meta.get("embedding_length") or 0),
+                head_count=int(meta.get("head_count") or 0),
+            )
+            # Query GPU at THIS moment (don't depend on outer scope — the
+            # general gpu_free variable isn't computed until after this
+            # block runs for the partial-offload precheck).
+            _gpus_now = detect_nvidia_gpus()
+            free_vram = max((float(g.get("free_gb", 0.0)) for g in _gpus_now), default=0.0)
+            auto_target = max(0.0, (free_vram - kv_cache - 0.7) / 1.10)
+            sys.stderr.write(
+                f"[auto-offload] free_vram={free_vram:.2f}GB, kv_cache={kv_cache:.2f}GB, "
+                f"target_offload={auto_target:.2f}GB ({total_layers} layers @ "
+                f"{gb_per_layer:.3f}GB/each)\n"
+            )
+            if auto_target >= size_gb - gb_per_layer:
+                n_gpu_layers = -1
+                offload_gb = size_gb
+            elif auto_target <= 0:
+                n_gpu_layers = 0
+                offload_gb = 0.0
+            else:
+                n_gpu_layers = max(1, int(round(auto_target / gb_per_layer)))
                 n_gpu_layers = min(n_gpu_layers, total_layers - 1)
                 offload_gb = n_gpu_layers * gb_per_layer
         elif offload_gb_req >= size_gb:
@@ -723,19 +807,22 @@ class LlamaCppEngine(LLMEngine):
                 # been a crash vector on some MoE builds (STATUS_ILLEGAL_-
                 # INSTRUCTION at sample time); vision needs it badly enough to
                 # accept that risk.
+                # flash_attn ON for vision (revert of the disable attempt —
+                # turning it off didn't fix the kq-3 error, and flash_attn
+                # is genuinely needed for vision attention throughput).
                 flash_attn = chat_handler is not None
-                # Smaller batch on Apple Silicon vision: each image batch
-                # rebuilds the Metal compute graph at a topology dependent
-                # on n_batch. 512 blows the GPU command-buffer ceiling on
-                # 16 GB Macs (`kIOGPUCommandBufferCallbackErrorOutOfMemory`).
-                # 128 trades a bit of image-encode latency for a graph that
-                # actually fits.
-                n_batch = 128 if (is_apple_silicon and chat_handler is not None) else 512
+                # Default batch sizing — n_batch and n_ubatch both at 512.
+                # The kq-3 graph-allocator error is unrelated to batch sizing
+                # (verified empirically); it's about something else in the
+                # multi-buffer graph reshape path.
+                n_batch  = 128 if (is_apple_silicon and chat_handler is not None) else 512
+                n_ubatch = 128 if (is_apple_silicon and chat_handler is not None) else 512
                 self._llm = Llama(
                     model_path=path,
                     n_ctx=n_ctx,
                     n_threads=n_threads,
                     n_batch=n_batch,
+                    n_ubatch=n_ubatch,
                     n_gpu_layers=n_gpu_layers,
                     use_mmap=True,
                     use_mlock=False,
@@ -1126,41 +1213,62 @@ class LlamaCppEngine(LLMEngine):
             processors = [_abort_processor]
 
             if CONFIG.thinking_mode == "quick":
-                # Filter to positive token IDs only — the supports_thinking
-                # flag uses a `-1` sentinel for "filename heuristic match,
-                # no real tokens" so writing to logits[-1] would corrupt
-                # the last real token's score.
-                think_ids = [
-                    t for t in (getattr(self, "_think_token_ids", None) or [])
-                    if isinstance(t, int) and t >= 0
-                ]
-                if think_ids:
-                    sys.stderr.write(
-                        f"[thinking] Quick mode: suppressing tokens {think_ids} "
-                        "for the opening sample steps\n"
-                    )
-                    state = {"steps_remaining": 6}
-                    def _no_think_processor(_input_ids, logits):  # noqa: ANN001
-                        if state["steps_remaining"] > 0:
-                            for tid in think_ids:
-                                try:
-                                    logits[tid] = -1e30
-                                except Exception:  # noqa: BLE001
-                                    pass
-                            state["steps_remaining"] -= 1
-                        return logits
-                    processors.append(_no_think_processor)
+                # Text-path thinking budget. Same simplified strategy as the
+                # vision path: don't try to detect when thinking STARTS (the
+                # `<think>` token detection was unreliable across tokenizers).
+                # Just count tokens generated this turn — if `</think>` hasn't
+                # appeared by `budget`, force it.
+                #
+                # Note: the prompt going in already contains earlier turns'
+                # think blocks (the input_ids array has the full history),
+                # so we need to record the input_ids length at processor-
+                # creation time and use it as the baseline for "tokens since
+                # the model started generating".
+                think_budget = 100
+                think_close_ids: set[int] = set()
+                try:
+                    for s in ("</think>", "<|think_end|>"):
+                        toks = self._llm.tokenize(s.encode("utf-8"), add_bos=False, special=True)
+                        # Only trust SINGLE-token markers. Multi-token markers
+                        # (where `toks[0]` is just `<`) cause false positives —
+                        # the budget thinks the close fired the moment the
+                        # model emits any `<` character.
+                        if len(toks) == 1: think_close_ids.add(int(toks[0]))
+                except Exception:  # noqa: BLE001
+                    pass
 
-                # Text-path EOS safety net — only mask EOS for the FIRST
-                # sample step (rare "first token is EOS" lottery loss).
-                # No bigger window: the principled fix is the content-bearing
-                # think prefill in the vision sampler, not banning EOS
-                # broadly. The text path doesn't get a prefill (llama.cpp's
-                # standard handler renders the prompt itself), so on text-
-                # only models that aren't vision-paired, the Quick mode is
-                # limited to whatever the fine-tune's natural /no_think
-                # behavior is. Vision-paired models use the wrapper which
-                # has the content prefill.
+                close_id_for_force = next(iter(think_close_ids), None)
+                if close_id_for_force is not None:
+                    sys.stderr.write(
+                        f"[thinking] Quick mode: budget = {think_budget} tokens. "
+                        f"close={sorted(think_close_ids)}.\n"
+                    )
+                    budget_state = {
+                        "baseline": None,        # input_ids length on first call
+                        "closed_seen": False,    # has `</think>` been generated?
+                    }
+                    def _budget_processor(input_ids, logits):  # noqa: ANN001
+                        if budget_state["baseline"] is None:
+                            budget_state["baseline"] = len(input_ids)
+                        generated = len(input_ids) - budget_state["baseline"]
+                        # Did the most-recently-sampled token close the think block?
+                        if not budget_state["closed_seen"] and len(input_ids) > 0:
+                            last = int(input_ids[-1])
+                            if last in think_close_ids:
+                                budget_state["closed_seen"] = True
+                        # Out of budget and still no close — force </think>.
+                        if not budget_state["closed_seen"] and generated >= think_budget:
+                            try:
+                                close_logit = logits[close_id_for_force]
+                                logits[:] = -1e30
+                                logits[close_id_for_force] = max(close_logit, 0.0)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        return logits
+                    processors.append(_budget_processor)
+
+                # Text-path EOS safety net for the very first sample step —
+                # covers the random-sampling first-token-is-EOS lottery loss.
                 eos_ids_set: list[int] = []
                 try:
                     eos_ids_set.append(int(self._llm.token_eos()))
@@ -1261,6 +1369,184 @@ class LlamaCppEngine(LLMEngine):
             if isinstance(item, BaseException):
                 raise RuntimeError(f"Inference failed: {item}") from item
             yield item
+
+    def count_prompt_tokens(self, messages: List[ChatMessage]) -> dict:
+        """Return the exact number of tokens llama.cpp would charge for this
+        prompt — chat-template chrome included, plus a family-aware per-image
+        token count for any image_url blocks.
+
+        Used by the renderer's context wheel to replace the chars/4 heuristic.
+        Returns {"tokens", "textTokens", "imageTokens", "imageCount"}.
+        """
+        llm = getattr(self, "_llm", None)
+        if llm is None:
+            return {"tokens": 0, "textTokens": 0, "imageTokens": 0, "imageCount": 0}
+
+        # 1. Strip multimodal content down to text the template can render.
+        #    Each image_url block becomes a single placeholder; the real cost
+        #    is added separately below (templates that don't know how to
+        #    render image blocks otherwise fail or yield wildly wrong text).
+        image_count = 0
+        flat: list[dict] = []
+        for m in messages:
+            content = m.content
+            if isinstance(content, list):
+                parts: list[str] = []
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    t = block.get("type")
+                    if t == "text":
+                        parts.append(str(block.get("text", "")))
+                    elif t == "image_url":
+                        image_count += 1
+                        parts.append("[image]")
+                content_str = "\n".join(parts)
+            else:
+                content_str = str(content or "")
+            flat.append({"role": m.role, "content": content_str})
+
+        # 2. Render the full prompt through the model's chat template.
+        prompt_str = self._render_chat_prompt(flat)
+
+        # 3. Tokenize. add_bos=False because the template inserts BOS itself
+        #    when applicable; special=True so role markers count as tokens.
+        try:
+            text_tokens = len(llm.tokenize(prompt_str.encode("utf-8"), add_bos=False, special=True))
+        except Exception:  # noqa: BLE001
+            text_tokens = max(1, len(prompt_str) // 4)
+
+        # 4. Per-image token cost via the active vision handler family.
+        per_image = self._vision_tokens_per_image() if self.vision_active else 0
+        image_tokens = image_count * per_image
+
+        return {
+            "tokens": text_tokens + image_tokens,
+            "textTokens": text_tokens,
+            "imageTokens": image_tokens,
+            "imageCount": image_count,
+        }
+
+    def _render_chat_prompt(self, flat_messages: list[dict]) -> str:
+        """Render `flat_messages` (role+content text only) through the model's
+        chat template. Tries the GGUF-embedded Jinja template first, then falls
+        back to llama.cpp's built-in `llama_chat_apply_template`."""
+        llm = getattr(self, "_llm", None)
+        if llm is None:
+            return ""
+
+        # Path 1: GGUF-embedded Jinja2 template (most modern models).
+        try:
+            template = None
+            meta = getattr(llm, "metadata", None)
+            if meta is not None:
+                template = meta.get("tokenizer.chat_template")
+            if template:
+                from llama_cpp.llama_chat_format import Jinja2ChatFormatter  # type: ignore
+                try:
+                    eos_str = llm.detokenize([llm.token_eos()]).decode("utf-8", errors="replace")
+                except Exception:  # noqa: BLE001
+                    eos_str = ""
+                try:
+                    bos_id = llm.token_bos()
+                    bos_str = llm.detokenize([bos_id]).decode("utf-8", errors="replace") if bos_id and bos_id != -1 else ""
+                except Exception:  # noqa: BLE001
+                    bos_str = ""
+                formatter = Jinja2ChatFormatter(
+                    template=template,
+                    eos_token=eos_str,
+                    bos_token=bos_str,
+                    add_generation_prompt=True,
+                )
+                return formatter(messages=flat_messages).prompt
+        except Exception:  # noqa: BLE001 — fall through to C-level path
+            pass
+
+        # Path 2: llama.cpp's built-in template names (chatml, llama-3, qwen, ...).
+        try:
+            import ctypes
+            import llama_cpp  # type: ignore
+            chat_fmt = getattr(llm, "chat_format", None) or "chatml"
+            n = len(flat_messages)
+            arr_t = llama_cpp.llama_chat_message * n
+            arr = arr_t()
+            keep_alive: list[bytes] = []
+            for i, m in enumerate(flat_messages):
+                r = (m.get("role") or "user").encode("utf-8")
+                c = (m.get("content") or "").encode("utf-8")
+                keep_alive.extend([r, c])
+                arr[i].role = r
+                arr[i].content = c
+            buf_size = max(1024, sum(len(m.get("content", "")) for m in flat_messages) * 2 + 512)
+            buf = ctypes.create_string_buffer(buf_size)
+            written = llama_cpp.llama_chat_apply_template(
+                chat_fmt.encode("utf-8"), arr, n, True, buf, buf_size,
+            )
+            if written > 0:
+                return buf.raw[:written].decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Path 3: dumb concatenation. Loses template chrome — the count will be
+        # off by ~10 tokens per message, which is still better than chars/4.
+        return "\n".join(f"[{m.get('role')}]\n{m.get('content','')}" for m in flat_messages)
+
+    def _vision_tokens_per_image(self) -> int:
+        """Tokens emitted per image by the loaded vision handler at our 384 px
+        max-edge downsample. Values are calibrated from the projector family,
+        not the source image (we always reshape before sending)."""
+        llm = getattr(self, "_llm", None)
+        handler = getattr(llm, "chat_handler", None) if llm is not None else None
+        if handler is None:
+            return 0
+        # When we wrap the real handler in `_VisionHandlerWrapper`, the wrapper's
+        # own classname is useless for family detection — peel it off first.
+        inner = getattr(handler, "_inner", None)
+        real = inner if inner is not None else handler
+        name = type(real).__name__.lower()
+        if "qwen25vl" in name or "qwen3vl" in name or "qwen2vl" in name:
+            return 200       # ceil(384/14)^2 / 4 + a few markers
+        if "llama32vision" in name or "mllama" in name:
+            return 1024      # mllama emits a fixed 1024 per image tile
+        if "minicpm" in name:
+            return 96
+        if "moondream" in name:
+            return 729
+        if "nanollava" in name:
+            return 256
+        if "llava" in name:
+            return 576       # 1.5 base; 1.6 with anyres is similar at our edge cap
+        if "obsidian" in name:
+            return 64
+        return 256
+
+    def close(self) -> None:
+        """Explicit teardown — free the underlying Llama (and its CUDA buffers).
+
+        Dropping the Python ref alone is unreliable because the Llama object
+        keeps the vision chat-handler in `chat_handler`, which can hold a
+        back-ref to inner ctypes state. We break the cycle ourselves and call
+        the wheel's own `close()` when it's available so VRAM is released
+        before the next load.
+        """
+        llm = getattr(self, "_llm", None)
+        if llm is None:
+            return
+        try:
+            handler = getattr(llm, "chat_handler", None)
+            inner = getattr(handler, "_inner", None) if handler is not None else None
+            for obj in (inner, handler):
+                close = getattr(obj, "close", None) if obj is not None else None
+                if callable(close):
+                    try: close()
+                    except Exception: pass  # noqa: BLE001
+            llm.chat_handler = None
+            close = getattr(llm, "close", None)
+            if callable(close):
+                try: close()
+                except Exception: pass  # noqa: BLE001
+        finally:
+            self._llm = None  # type: ignore[assignment]
 
 
 def _tail(text: str, lines: int) -> str:

@@ -17,6 +17,9 @@ interface State {
   conversations: Conversation[];
   activeId: string | null;
   streaming: boolean;
+  // Transient: true while maybeCompact() is running. Drives the
+  // "Compacting earlier messages…" indicator. Doesn't persist.
+  compacting: boolean;
   modelStatus: ModelStatus;
   libraryModels: LibraryModel[];
   libraryRoot: string;
@@ -59,6 +62,7 @@ interface State {
   replaceActiveMessages: (messages: Message[]) => void;
 
   setStreaming: (s: boolean) => void;
+  setCompacting: (v: boolean) => void;
   setSettings: (p: Partial<Settings>) => Promise<void>;
   setPerm: (k: string, v: boolean) => Promise<void>;
   setOpenFile: (path: string | null, content: string, dirty?: boolean) => void;
@@ -76,7 +80,10 @@ const DEFAULT_SETTINGS: Settings = {
   temperature: 0.7,
   systemPrompt: 'You are a helpful local AI assistant. Be concise and accurate.',
   nCtx: 4096,
-  gpuOffloadGb: 0,
+  // -1 is the "Auto" sentinel: backend picks the largest offload that fits
+  // alongside KV cache + compute buffer at load time. Better default than 0
+  // (CPU-only) since most users want GPU used by default.
+  gpuOffloadGb: -1,
   // ON by default — the user wants the model to "see" attached images.
   // If they're on a non-vision model and it produces garbage on images,
   // they can turn this off in Settings → Model → Attachments.
@@ -126,6 +133,7 @@ export const useStore = create<State>((set, get) => ({
   conversations: loadConversations(),
   activeId: null,
   streaming: false,
+  compacting: false,
   modelStatus: {
     status: 'idle',
     message: '',
@@ -157,6 +165,10 @@ export const useStore = create<State>((set, get) => ({
     // identical to 'smart' for Qwen3 (both produce reasoning). Coerce any
     // legacy stored value to 'smart' so the picker shows a valid option.
     if ((merged.thinkingMode as string) === 'deep') merged.thinkingMode = 'smart';
+    // Migrate: the old default was 0 (CPU-only). The new default is -1 (Auto).
+    // Users who deliberately picked CPU-only can re-pick it on the slider; this
+    // only catches users who never touched the field.
+    if (merged.gpuOffloadGb === 0) merged.gpuOffloadGb = -1;
     const perms = await api.perms.get();
     const convs = get().conversations;
     set({
@@ -264,6 +276,10 @@ export const useStore = create<State>((set, get) => ({
 
   setStreaming(s) {
     set({ streaming: s });
+  },
+
+  setCompacting(v) {
+    set({ compacting: v });
   },
 
   deleteMessage(id) {

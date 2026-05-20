@@ -59,12 +59,24 @@ def system_info(model_path: str | None = None) -> dict:
         size_gb = _os.path.getsize(model_path) / (1024 ** 3)
         meta = read_gguf_meta(model_path)
         block_count = int(meta.get("block_count") or 32)
+        # Refined per-layer cost estimate. Output (lm_head) and embedding
+        # tensors are typically ~1.5-3 GB on a 30B+ MoE model; subtracting
+        # one layer's worth as "head + embed overhead" leaves a more honest
+        # gb_per_layer. Caller will use this to convert the gpu-offload GB
+        # slider into a layer count.
+        head_and_embed_gb = max(0.0, size_gb * 0.04)  # rough — 4% of model
+        per_layer_gb = max(0.01, (size_gb - head_and_embed_gb) / max(1, block_count))
         model_meta = {
             "sizeGb": size_gb,
             "arch": meta.get("arch"),
             "blockCount": block_count,
             "trainedContext": meta.get("context_length"),
-            "gbPerLayer": size_gb / (block_count + 1),
+            "embeddingLength": meta.get("embedding_length"),
+            "headCount": meta.get("head_count"),
+            "headCountKv": meta.get("head_count_kv"),
+            "ropeDim": meta.get("rope_dimension_count"),
+            "headAndEmbedGb": head_and_embed_gb,
+            "gbPerLayer": per_layer_gb,
         }
     return {
         "ramAvailableGb": avail_gb,
@@ -111,34 +123,212 @@ def memory_delete(key: str) -> dict:
     return {"ok": True}
 
 
+class TokenizePayload(BaseModel):
+    messages: list[dict]            # [{role, content}, ...] — content may be str or list
+    system_prompt: str | None = None
+    agent_mode: bool = False
+    workspace: str = ""
+
+
+@app.post("/tokenize")
+def tokenize(payload: TokenizePayload) -> dict:
+    """Exact token count for the prompt llama.cpp would build for this conversation.
+
+    Builds the same system prompt the runner would (with tool catalog when
+    agent_mode), renders the model's chat template, tokenizes the result, and
+    adds a family-aware per-image cost for any image blocks. Returns
+    `{tokens: null}` when no model is loaded so the frontend can fall back to
+    its rough chars/4 estimate.
+    """
+    if not loader.is_loaded():
+        return {"tokens": None, "reason": "no_model_loaded"}
+    engine = loader.get()
+    from .llm.llama_cpp_engine import LlamaCppEngine
+    if not isinstance(engine, LlamaCppEngine):
+        return {"tokens": None, "reason": "not_llama_cpp"}
+
+    from .agent.prompts import build_system_prompt
+    from .llm import ChatMessage
+    base_prompt = (
+        payload.system_prompt if payload.system_prompt is not None else CONFIG.system_prompt
+    )
+    system = build_system_prompt(
+        base_prompt, list_tools(),
+        payload.workspace or CONFIG.workspace,
+        payload.agent_mode,
+    )
+
+    chat_messages: list[ChatMessage] = []
+    if system:
+        chat_messages.append(ChatMessage(role="system", content=system))
+    for m in payload.messages:
+        chat_messages.append(ChatMessage(
+            role=m.get("role") or "user",
+            content=m.get("content") if m.get("content") is not None else "",
+        ))
+
+    return engine.count_prompt_tokens(chat_messages)
+
+
+class CaptionPayload(BaseModel):
+    # [{"id": "abc", "dataUri": "data:image/png;base64,..."}, ...]
+    images: list[dict]
+
+
+@app.post("/caption")
+async def caption(payload: CaptionPayload) -> dict:
+    """Caption a batch of images via the loaded vision model.
+
+    Used by the auto-compaction pipeline to convert image attachments on
+    older messages into one-line text captions BEFORE feeding the slice to
+    /summarize. Without this, base64 dataUris get stringified into the
+    summarizer's prompt as raw garbage. Returns `{captions: [{id, caption}]}`.
+    """
+    if not loader.is_loaded():
+        raise HTTPException(409, "Model is not loaded.")
+    engine = loader.get()
+    from .llm.llama_cpp_engine import LlamaCppEngine
+    if not isinstance(engine, LlamaCppEngine) or not engine.vision_active:
+        # No vision handler — caller falls back to filename placeholders.
+        raise HTTPException(409, "No vision model loaded.")
+    if not payload.images:
+        return {"captions": []}
+
+    # Build a single multimodal turn with all images numbered. One forward
+    # pass beats N round-trips when the slice has several images, though we
+    # cap the batch at the caller side (~4 images) so n_ctx stays sane.
+    content_blocks: list[dict] = [{
+        "type": "text",
+        "text": (
+            f"Caption each of the {len(payload.images)} image(s) below in one "
+            "short sentence describing what's depicted. Format your response "
+            "as a numbered list, one caption per line, no preamble:\n"
+            "1. <caption for image 1>\n"
+            "2. <caption for image 2>\n"
+            "...\n"
+            "Each caption should be a single sentence focusing on the main "
+            "content (no chatter, no hedging)."
+        ),
+    }]
+    for img in payload.images:
+        content_blocks.append({
+            "type": "image_url",
+            "image_url": {"url": img.get("dataUri", "")},
+        })
+
+    from .llm import ChatMessage
+    out_parts: list[str] = []
+    async for delta in engine.stream([ChatMessage(role="user", content=content_blocks)]):
+        out_parts.append(delta)
+    raw = "".join(out_parts).strip()
+
+    # Parse "1. text\n2. text" — tolerate missing numbers / extra prose by
+    # falling back to splitting on newlines. Order matches input order.
+    captions: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Strip leading "1." / "1)" / "- " / "* " markers.
+        for prefix in (".", ")"):
+            if len(line) > 2 and line[0].isdigit() and line[1] == prefix:
+                line = line[2:].strip()
+                break
+        if line.startswith(("-", "*")):
+            line = line[1:].strip()
+        if line:
+            captions.append(line)
+
+    # Pad/truncate to match input length.
+    while len(captions) < len(payload.images):
+        captions.append("(image)")
+    captions = captions[: len(payload.images)]
+
+    return {
+        "captions": [
+            {"id": img.get("id"), "caption": cap}
+            for img, cap in zip(payload.images, captions)
+        ],
+    }
+
+
 class SummarizePayload(BaseModel):
-    messages: list[dict]    # [{role, content}, ...]
+    # The slice of messages to compress. Content may be string OR list of
+    # {type, text} blocks (image blocks must be substituted up-front by the
+    # caller via /caption — this endpoint never sees raw base64).
+    messages: list[dict]
+    # When set, the model is told to extend an existing summary instead of
+    # writing one from scratch; lets the chain stay short and avoids paying
+    # to re-summarize older content on every compaction.
+    prior_summary: str | None = None
+    # Pre-computed [image-N: caption] strings to inject as a bullet list so
+    # the model knows what images were attached to the slice.
+    image_captions: list[str] = []
+    # When True, collapse `messages` (which is a list of prior summaries
+    # concatenated as plain text) into a single merged summary. Used to cap
+    # the summary chain length.
+    merge_only: bool = False
 
 
 @app.post("/summarize")
 async def summarize(payload: SummarizePayload) -> dict:
     """Compress a slice of conversation history into a single summary.
 
-    Called by the frontend when the running conversation gets close to n_ctx.
-    The summary replaces the original slice in the renderer's store, so future
-    turns stay within budget without losing the gist of earlier discussion.
+    Three modes:
+        merge_only=True             — collapse multiple prior summaries into one
+        prior_summary provided      — extend the existing summary with new content
+        otherwise                   — fresh summary of the slice (legacy behavior)
+
+    The summary replaces the compacted slice in the renderer's store.
     """
     if not loader.is_loaded():
         raise HTTPException(409, "Model is not loaded. Load a model first.")
-    if not payload.messages:
+    if not payload.messages and not payload.prior_summary:
         return {"summary": ""}
 
     convo = "\n\n".join(
         f"[{m.get('role', 'user').upper()}]\n{m.get('content', '')}"
         for m in payload.messages
     )
-    meta = (
-        "Summarize the following conversation in a concise paragraph. "
-        "Preserve: any decisions made, file paths mentioned, code changes, "
-        "open questions, and user preferences. Drop chitchat. Output ONLY "
-        "the summary text, no preamble.\n\n"
-        f"---\n{convo}\n---"
-    )
+
+    captions_block = ""
+    if payload.image_captions:
+        captions_block = (
+            "Images referenced in this slice:\n"
+            + "\n".join(f"- {c}" for c in payload.image_captions)
+            + "\n\n"
+        )
+
+    if payload.merge_only:
+        meta = (
+            "Merge the following summary fragments into one coherent paragraph, "
+            "deduplicating overlapping facts. Preserve all file paths, decisions, "
+            "code changes, and open questions. Output ONLY the merged summary, "
+            "no preamble.\n\n"
+            f"---\n{convo}\n---"
+        )
+    elif payload.prior_summary:
+        meta = (
+            "You are extending an ongoing conversation summary. Below is the "
+            "existing summary followed by NEW messages that need to be folded "
+            "into it. Output a SINGLE updated summary paragraph that integrates "
+            "both — keep the existing facts and add what the new messages "
+            "contributed. Preserve file paths, decisions, code changes, open "
+            "questions, user preferences. Drop chitchat. Output ONLY the "
+            "summary text, no preamble.\n\n"
+            f"{captions_block}"
+            f"EXISTING SUMMARY:\n{payload.prior_summary}\n\n"
+            f"NEW MESSAGES:\n---\n{convo}\n---"
+        )
+    else:
+        meta = (
+            "Summarize the following conversation in a concise paragraph. "
+            "Preserve: any decisions made, file paths mentioned, code changes, "
+            "open questions, and user preferences. Drop chitchat. Output ONLY "
+            "the summary text, no preamble.\n\n"
+            f"{captions_block}"
+            f"---\n{convo}\n---"
+        )
 
     from .llm import ChatMessage
     engine = loader.get()

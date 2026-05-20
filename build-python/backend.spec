@@ -5,7 +5,7 @@ from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
 datas = []
-binaries = []
+binaries = [('F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\cublas64_12.dll', 'llama_cpp/lib'), ('F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\cublasLt64_12.dll', 'llama_cpp/lib'), ('F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\cudart64_12.dll', 'llama_cpp/lib'), ('F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\ggml-cuda.dll', 'llama_cpp/lib'), ('F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\ggml-base.dll', 'llama_cpp/lib'), ('F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\ggml-cpu.dll', 'llama_cpp/lib'), ('F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\ggml.dll', 'llama_cpp/lib'), ('F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\llama.dll', 'llama_cpp/lib'), ('F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\mtmd.dll', 'llama_cpp/lib')]
 hiddenimports = ['websockets']
 datas += collect_data_files('llama_cpp')
 binaries += collect_dynamic_libs('llama_cpp')

@@ -62,8 +62,17 @@ def _read_value(f, vtype: int) -> Any:
 
 
 def read_gguf_meta(path: str) -> Dict[str, Any]:
-    """Return a dict with keys: arch, block_count, context_length, embedding_length.
-    Missing keys mean we couldn't parse them — caller should provide defaults.
+    """Return a dict of model metadata needed for accurate VRAM accounting.
+
+    Keys (any may be missing — caller should fall back to heuristics):
+        arch                      e.g. "qwen3vl", "qwen35moe", "llama"
+        block_count               number of transformer layers
+        context_length            trained context window
+        embedding_length          hidden dim (n_embd)
+        head_count                number of attention heads
+        head_count_kv             number of KV heads (= head_count for MHA,
+                                  < head_count for GQA — Qwen3 MoE uses GQA)
+        rope_dimension_count      head_dim for RoPE (often n_embd / head_count)
     """
     out: Dict[str, Any] = {}
     try:
@@ -89,8 +98,40 @@ def read_gguf_meta(path: str) -> Dict[str, Any]:
                     out["context_length"] = int(value)
                 elif key.endswith(".embedding_length"):
                     out["embedding_length"] = int(value)
-                if "arch" in out and "block_count" in out and "context_length" in out:
-                    break
+                elif key.endswith(".attention.head_count"):
+                    out["head_count"] = int(value)
+                elif key.endswith(".attention.head_count_kv"):
+                    out["head_count_kv"] = int(value)
+                elif key.endswith(".rope.dimension_count"):
+                    out["rope_dimension_count"] = int(value)
     except Exception:  # noqa: BLE001 — best-effort parse
         pass
     return out
+
+
+def estimate_kv_cache_gb(
+    n_ctx: int,
+    block_count: int,
+    head_count_kv: int = 0,
+    rope_dim: int = 0,
+    embedding_length: int = 0,
+    head_count: int = 0,
+    dtype_bytes: int = 2,
+) -> float:
+    """Accurate KV-cache size formula:
+        2 (K + V) × n_layers × n_ctx × n_kv_heads × head_dim × dtype_bytes
+
+    Falls back to a hand-tuned constant if architecture details are missing.
+    """
+    if head_count_kv and rope_dim and block_count:
+        bytes_total = 2 * block_count * n_ctx * head_count_kv * rope_dim * dtype_bytes
+        return bytes_total / (1024 ** 3)
+    # Fallback: derive head_dim from n_embd / n_heads if those are known.
+    if embedding_length and head_count and block_count:
+        head_dim = embedding_length // max(1, head_count)
+        # For GQA models without explicit head_count_kv we assume MHA (kv_heads = heads).
+        kv = head_count_kv or head_count
+        bytes_total = 2 * block_count * n_ctx * kv * head_dim * dtype_bytes
+        return bytes_total / (1024 ** 3)
+    # Hand-tuned last resort — calibrated against Llama-3 8B at 8K (~0.5 GB).
+    return (n_ctx / 1024) * max(1, block_count) * 0.0001 * 16

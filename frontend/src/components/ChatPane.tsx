@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '../state/store';
 import { api, BACKEND_HTTP } from '../ipc/bridge';
-import { sendChat, estimateAttachmentTokens, thinkingSupported } from '../hooks/useChat';
+import { sendChat, estimateAttachmentTokens, thinkingSupported, useExactCtxUsed } from '../hooks/useChat';
 import type { ThinkingMode } from '../state/types';
 import { maybeRunSlash, suggestSlash, COMMANDS } from '../lib/slashCommands';
 import { roughTokens } from '../lib/parseThinking';
@@ -28,6 +28,16 @@ const TEXT_EXT = new Set([
   'toml', 'ini', 'xml', 'sql', 'env',
 ]);
 const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
+
+// Hard cap on images per outgoing message. Larger batches trigger:
+//   1. /tokenize POST bodies in the tens of MB (slow to stringify + parse).
+//   2. Caption-batch loops 30+ deep at ~3-5 s each ⇒ minutes of "Compacting…".
+//   3. mtmd sequential CLIP eval of 100+ images per turn — VRAM and graph-
+//      allocator failures kick in well before that count.
+//   4. localStorage quota blown silently (5-10 MB ceiling) so the chat
+//      doesn't persist on reload.
+// 16 leaves comfortable headroom for all four budgets at our 384 px downsample.
+const MAX_IMAGES_PER_MESSAGE = 16;
 
 export default function ChatPane() {
   const messages = useStore((s) => (s.activeId ? s.conversations.find((c) => c.id === s.activeId)?.messages ?? [] : []));
@@ -51,6 +61,13 @@ function WelcomeView() {
     const v = text.trim();
     if (streaming) return;
     if (!v && attachments.length === 0) return;
+    // Defensive cap — the attach paths already clip, but guard against any
+    // pre-existing oversized batch (e.g. legacy state) before we send.
+    const imgCount = attachments.filter((a) => a.kind === 'image').length;
+    if (imgCount > MAX_IMAGES_PER_MESSAGE) {
+      alert(`Too many images attached (${imgCount}). Limit is ${MAX_IMAGES_PER_MESSAGE} per message — remove some or split across turns.`);
+      return;
+    }
     setText('');
     const att = attachments;
     setAttachments([]);
@@ -122,11 +139,19 @@ function MessageList() {
 function Composer({ streaming }: { streaming: boolean }) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const compacting = useStore((s) => s.compacting);
 
   async function submit() {
     const v = text.trim();
     if (streaming) return;
     if (!v && attachments.length === 0) return;
+    // Defensive cap — the attach paths already clip, but guard against any
+    // pre-existing oversized batch (e.g. legacy state) before we send.
+    const imgCount = attachments.filter((a) => a.kind === 'image').length;
+    if (imgCount > MAX_IMAGES_PER_MESSAGE) {
+      alert(`Too many images attached (${imgCount}). Limit is ${MAX_IMAGES_PER_MESSAGE} per message — remove some or split across turns.`);
+      return;
+    }
     setText('');
     const att = attachments;
     setAttachments([]);
@@ -138,19 +163,33 @@ function Composer({ streaming }: { streaming: boolean }) {
   return (
     <div className="px-6 py-3">
       <div className="max-w-3xl mx-auto">
+        {compacting && <CompactingIndicator />}
         <InputBox
           value={text}
           onChange={setText}
           attachments={attachments}
           onAttachmentsChange={setAttachments}
           onSubmit={submit}
-          disabled={streaming}
+          disabled={streaming || compacting}
           onCancel={streaming ? () => api.llm.cancel() : undefined}
         />
         <div className="mt-2 text-center text-[11px] text-[var(--fg-dim)]">
           Local AI may make mistakes. Tools run only when permitted.
         </div>
       </div>
+    </div>
+  );
+}
+
+function CompactingIndicator() {
+  return (
+    <div className="mb-2 flex items-center justify-center gap-2 text-[11.5px] text-[var(--fg-muted)]">
+      <span className="inline-flex gap-1">
+        <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" style={{ animationDelay: '0ms' }} />
+        <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" style={{ animationDelay: '180ms' }} />
+        <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" style={{ animationDelay: '360ms' }} />
+      </span>
+      <span>Compacting earlier messages…</span>
     </div>
   );
 }
@@ -206,6 +245,33 @@ export function InputBox({
   const [attachMenu, setAttachMenu] = useState(false);
   const workspace = useStore((s) => s.workspace);
   const [fileIndex, setFileIndex] = useState<string[]>([]);
+  // Transient warning when an attach action gets clipped by MAX_IMAGES_PER_MESSAGE.
+  // Cleared automatically when the next attach succeeds or after a short timeout.
+  const [attachWarn, setAttachWarn] = useState<string | null>(null);
+  useEffect(() => {
+    if (!attachWarn) return;
+    const t = setTimeout(() => setAttachWarn(null), 4000);
+    return () => clearTimeout(t);
+  }, [attachWarn]);
+
+  // Slice an incoming list of additions so the total image count stays ≤ the cap.
+  // Returns the trimmed list and how many were dropped so the caller can warn.
+  function clipImagesToCap(incoming: Attachment[]): { kept: Attachment[]; dropped: number } {
+    const currentImages = attachments.filter((a) => a.kind === 'image').length;
+    const available = Math.max(0, MAX_IMAGES_PER_MESSAGE - currentImages);
+    let imageBudget = available;
+    const kept: Attachment[] = [];
+    let dropped = 0;
+    for (const a of incoming) {
+      if (a.kind === 'image') {
+        if (imageBudget > 0) { kept.push(a); imageBudget -= 1; }
+        else dropped += 1;
+      } else {
+        kept.push(a);
+      }
+    }
+    return { kept, dropped };
+  }
 
   useEffect(() => {
     if (!workspace) { setFileIndex([]); return; }
@@ -258,12 +324,15 @@ export function InputBox({
 
   // ─── Attachment helpers ───────────────────────────────────────────
   async function addFiles(files: File[]) {
-    const next: Attachment[] = [...attachments];
+    // Build the incoming list first, then clip against the image cap. We
+    // decode/downsample upfront so the cap check is accurate even when the
+    // user mixes images and text files in one drop/paste.
+    const incoming: Attachment[] = [];
     for (const f of files) {
       const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
       if (IMG_EXT.has(ext) || f.type.startsWith('image/')) {
         const dataUri = await loadAndDownsampleImage(f);
-        next.push({
+        incoming.push({
           id: crypto.randomUUID(), kind: 'image', name: f.name,
           dataUri, size: f.size, mime: f.type || `image/${ext}`,
         });
@@ -272,14 +341,18 @@ export function InputBox({
         const content = text.length > 100_000
           ? text.slice(0, 100_000) + '\n... [truncated]'
           : text;
-        next.push({
+        incoming.push({
           id: crypto.randomUUID(), kind: 'text', name: f.name,
           content, size: f.size, mime: f.type || 'text/plain',
         });
       }
       // unsupported types silently skipped — explicit error chip is too noisy
     }
-    onAttachmentsChange(next);
+    const { kept, dropped } = clipImagesToCap(incoming);
+    if (dropped > 0) {
+      setAttachWarn(`Skipped ${dropped} image${dropped === 1 ? '' : 's'} — limit is ${MAX_IMAGES_PER_MESSAGE} per message. Split across turns to send more.`);
+    }
+    onAttachmentsChange([...attachments, ...kept]);
   }
 
   function removeAttachment(id: string) {
@@ -319,7 +392,9 @@ export function InputBox({
     const res = await api.fs.pickFile(filters, true);
     if (!res) return;
     const paths = Array.isArray(res) ? res : [res];
-    const next: Attachment[] = [...attachments];
+    // Build all candidates first, then clip against the cap so image+text
+    // mixes don't accidentally evict a text file.
+    const incoming: Attachment[] = [];
     for (const p of paths) {
       const ext = p.split('.').pop()?.toLowerCase() ?? '';
       const name = p.split(/[\\/]/).pop() ?? p;
@@ -336,7 +411,7 @@ export function InputBox({
           for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i);
           const blob = new Blob([bytes], { type: mime });
           const dataUri = await loadAndDownsampleImage(blob);
-          next.push({
+          incoming.push({
             id: crypto.randomUUID(), kind: 'image', name,
             dataUri, size, mime,
           });
@@ -352,13 +427,17 @@ export function InputBox({
         const content = text.length > 100_000
           ? text.slice(0, 100_000) + '\n... [truncated]'
           : text;
-        next.push({
+        incoming.push({
           id: crypto.randomUUID(), kind: 'text', name,
           content, size: text.length, mime: 'text/plain',
         });
       } catch { /* skip */ }
     }
-    onAttachmentsChange(next);
+    const { kept, dropped } = clipImagesToCap(incoming);
+    if (dropped > 0) {
+      setAttachWarn(`Skipped ${dropped} image${dropped === 1 ? '' : 's'} — limit is ${MAX_IMAGES_PER_MESSAGE} per message. Split across turns to send more.`);
+    }
+    onAttachmentsChange([...attachments, ...kept]);
   }
 
   // ─── Token math (attachments included honestly) ───────────────────
@@ -379,16 +458,17 @@ export function InputBox({
   const activeMessages = useStore((s) =>
     s.activeId ? s.conversations.find((c) => c.id === s.activeId)?.messages ?? [] : [],
   );
-  const ctxUsed = useMemo(() => {
+  // Backend tokenises through the loaded model so the wheel matches what
+  // llama.cpp would actually charge — chat-template chrome, tool catalog, and
+  // a family-aware image cost. Returns null while no model is loaded; fall
+  // back to the rough chars/4 estimate so the wheel still shows something.
+  const exactCtxUsed = useExactCtxUsed(value, attachments);
+  const fallbackCtxUsed = useMemo(() => {
     let n = roughTokens(settings.systemPrompt);
     for (const m of activeMessages) {
       n += roughTokens(m.content);
       if (m.attachments) {
         for (const a of m.attachments) {
-          // Must match the live-input calculation: use sendsImageBytes
-          // (visionActive || sendImagesAsBase64), not just sendImagesAsBase64.
-          // Otherwise the wheel jumps 100%→0% the instant an image is sent
-          // because the past-message calc undercounts the image's real cost.
           n += estimateAttachmentTokens(a, sendsImageBytes, visionActive);
         }
       }
@@ -396,8 +476,10 @@ export function InputBox({
     n += tokenCount;
     return n;
   }, [settings.systemPrompt, sendsImageBytes, visionActive, activeMessages, tokenCount]);
+  const ctxUsed = exactCtxUsed ?? fallbackCtxUsed;
   const ctxMax = settings.nCtx || 4096;
   const ctxPct = Math.min(100, Math.round((ctxUsed / ctxMax) * 100));
+  const ctxIsExact = exactCtxUsed != null;
 
   return (
     <div
@@ -408,6 +490,11 @@ export function InputBox({
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
     >
+      {attachWarn && (
+        <div className="mb-2 px-3 py-1.5 rounded-xl text-[11.5px] text-amber-300 bg-amber-900/20 border border-amber-700/40">
+          {attachWarn}
+        </div>
+      )}
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-2">
           {attachments.map((a) => (
@@ -501,7 +588,7 @@ export function InputBox({
         </div>
 
         <div className="flex items-center gap-2">
-          <ContextWheel used={ctxUsed} max={ctxMax} pct={ctxPct} />
+          <ContextWheel used={ctxUsed} max={ctxMax} pct={ctxPct} exact={ctxIsExact} />
           <button
             title="Voice (not wired)"
             className="w-8 h-8 rounded-full hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--fg-muted)]"
@@ -533,12 +620,29 @@ export function InputBox({
   );
 }
 
-// Downsample an image to a max edge length and re-encode as JPEG. Vision
-// projectors (Qwen-VL especially) emit ~1 token per 28×28 patch — a 2048×1536
-// phone photo balloons to ~4000 image tokens, overflowing n_batch / n_ctx and
-// crashing image-embedding insertion. Capping at 1024px keeps the token count
-// well under 700 with no meaningful loss of detail for chat use.
-const MAX_IMAGE_EDGE = 1024;
+// Downsample images aggressively before sending to vision models. Token
+// cost per image is set by the PROJECTOR (mmproj), not by us — different
+// Qwen-VL fine-tunes can produce wildly different counts for the same
+// input. The only knob we have is the image's pixel dimensions:
+//
+//   ~1300 tokens @ 1024px on Qwen2.5-VL-base (patch=14, merge=2)
+//   ~73000 tokens @ 1024px on aggressive Qwen3-VL fine-tunes (patch=14, no merge)
+//
+// And we also have to keep individual patch batches small enough that
+// llama.cpp's mtmd compute graph doesn't fail to allocate (the
+// "ggml_gallocr_needs_realloc" / "cannot reallocate multi buffer graph"
+// error means a single image batch overran the pre-reserved buffer).
+//
+// 384 is the safe upper bound for this class of fine-tune: ~6500 tokens
+// per image, fits comfortably in a 40K context with room for several
+// follow-up messages, and the per-batch graph stays inside the reserved
+// buffer. Slight loss of detail vs 512 but the alternative is "doesn't
+// work at all."
+//
+// If a model with a well-behaved projector (proper patch-merge) is loaded,
+// users could safely raise this — TODO: make it a setting tied to model.
+const MAX_IMAGE_EDGE = 384;
+const JPEG_QUALITY   = 0.82;
 async function loadAndDownsampleImage(blob: Blob): Promise<string> {
   const objectUrl = URL.createObjectURL(blob);
   try {
@@ -548,17 +652,12 @@ async function loadAndDownsampleImage(blob: Blob): Promise<string> {
       el.onerror = (e) => reject(e);
       el.src = objectUrl;
     });
+    // Always re-encode through canvas. The previous "if it's already small
+    // enough, pass through" shortcut meant huge PNGs / screenshots at native
+    // resolution bypassed the cap when the longest edge happened to be ≤ the
+    // limit — that was a sneaky path to context overflow.
     const longest = Math.max(img.naturalWidth, img.naturalHeight);
     const scale = longest > MAX_IMAGE_EDGE ? MAX_IMAGE_EDGE / longest : 1;
-    if (scale === 1 && blob.type !== 'image/heic' && blob.type !== 'image/heif') {
-      // Already small enough — keep original encoding to avoid quality loss.
-      return await new Promise<string>((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(r.result as string);
-        r.onerror = reject;
-        r.readAsDataURL(blob);
-      });
-    }
     const w = Math.max(1, Math.round(img.naturalWidth * scale));
     const h = Math.max(1, Math.round(img.naturalHeight * scale));
     const canvas = document.createElement('canvas');
@@ -566,7 +665,7 @@ async function loadAndDownsampleImage(blob: Blob): Promise<string> {
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('canvas 2d unavailable');
     ctx.drawImage(img, 0, 0, w, h);
-    return canvas.toDataURL('image/jpeg', 0.88);
+    return canvas.toDataURL('image/jpeg', JPEG_QUALITY);
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
@@ -735,7 +834,7 @@ function useStoreThinking(): boolean {
  * Compact donut showing how much of the context window is in use.
  * Green < 50%, amber 50-80%, red > 80%. Hover for the exact breakdown.
  */
-function ContextWheel({ used, max, pct }: { used: number; max: number; pct: number }) {
+function ContextWheel({ used, max, pct, exact }: { used: number; max: number; pct: number; exact?: boolean }) {
   const color =
     pct >= 80 ? '#f87171'   // red-400
     : pct >= 50 ? '#fbbf24' // amber-400
@@ -744,10 +843,12 @@ function ContextWheel({ used, max, pct }: { used: number; max: number; pct: numb
   const stroke = 2;
   const c = 2 * Math.PI * radius;
   const offset = c * (1 - Math.min(100, pct) / 100);
+  // `exact` flips the tilde off when the count came from the backend tokenizer.
+  const prefix = exact ? '' : '~';
   return (
     <div
       className="relative flex items-center"
-      title={`Context: ${used.toLocaleString()} / ${max.toLocaleString()} tokens (~${pct}%)`}
+      title={`Context: ${used.toLocaleString()} / ${max.toLocaleString()} tokens (${prefix}${pct}%)${exact ? ' — exact, via loaded tokenizer' : ' — estimated'}`}
     >
       <svg width="22" height="22" viewBox="0 0 22 22" className="-rotate-90">
         <circle cx="11" cy="11" r={radius} fill="none" stroke="var(--bd-strong)" strokeWidth={stroke} />
@@ -764,7 +865,7 @@ function ContextWheel({ used, max, pct }: { used: number; max: number; pct: numb
           style={{ transition: 'stroke-dashoffset 0.2s ease' }}
         />
       </svg>
-      <span className="ml-1 text-[10.5px] mono text-[var(--fg-dim)] tabular-nums">{pct}%</span>
+      <span className="ml-1 text-[10.5px] mono text-[var(--fg-dim)] tabular-nums">{prefix}{pct}%</span>
     </div>
   );
 }

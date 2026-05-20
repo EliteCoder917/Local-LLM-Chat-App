@@ -9,6 +9,23 @@ import 'katex/dist/katex.min.css';
 import CodeBlock from './CodeBlock';
 import MermaidBlock from './MermaidBlock';
 
+// rehypeHighlight transforms fenced code blocks into nested <span> trees so
+// highlight.js classes can colour individual tokens. That means by the time
+// our `code` component runs, `children` is an ARRAY of React elements, not a
+// flat string. `String(array)` on that produces `[object Object],…` garbage —
+// the exact symptom in the chat bubble. Recurse the tree pulling out only
+// text nodes so we get back the raw source the user typed.
+function nodeToText(node: React.ReactNode): string {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(nodeToText).join('');
+  if (typeof node === 'object' && 'props' in (node as object)) {
+    return nodeToText((node as React.ReactElement<{ children?: React.ReactNode }>).props.children);
+  }
+  return '';
+}
+
 export default function Markdown({ text }: { text: string }) {
   return (
     <div className="prose prose-invert prose-sm max-w-none">
@@ -38,11 +55,22 @@ export default function Markdown({ text }: { text: string }) {
                 </code>
               );
             }
-            const raw = String(children ?? '').replace(/\n$/, '');
+            const raw = nodeToText(children).replace(/\n$/, '');
             if (lang === 'mermaid') {
               return <MermaidBlock source={raw} />;
             }
-            return <CodeBlock code={raw} language={lang} className={className} />;
+            // Pass the already-highlighted children too so CodeBlock can keep
+            // syntax colouring (those <span class="hljs-*"> nodes are what
+            // makes the styles in github-dark.css actually fire). `raw` still
+            // backs Copy / Apply so they get clean text.
+            return (
+              <CodeBlock
+                code={raw}
+                language={lang}
+                className={className}
+                highlighted={children}
+              />
+            );
           },
           // Wrap react-markdown's default <pre> as a transparent passthrough
           // since CodeBlock provides its own <pre>.

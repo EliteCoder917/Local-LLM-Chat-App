@@ -160,5 +160,10 @@ export interface SystemInfo {
     blockCount?: number;
     trainedContext?: number;
     gbPerLayer?: number;
+    embeddingLength?: number;
+    headCount?: number;
+    headCountKv?: number;
+    ropeDim?: number;
+    headAndEmbedGb?: number;
   };
 }
