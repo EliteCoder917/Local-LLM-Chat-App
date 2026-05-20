@@ -549,6 +549,45 @@ class LlamaCppEngine(LLMEngine):
         total_layers = int(meta.get("block_count") or 32) + 1
         gb_per_layer = size_gb / total_layers
 
+        # ---- Resolve context window (n_ctx). 0/negative = Auto ----------------
+        # Auto picks the largest context the machine can hold while staying
+        # performant: capped at the model's trained window and a 32K perf
+        # ceiling, and shrunk to fit a conservative slice of free memory.
+        # Computed BEFORE offload so the offload KV reserve uses the real ctx.
+        from .gguf_meta import estimate_kv_cache_gb as _kv_for_ctx
+        _PERF_CTX_CAP = 32768
+
+        def _kv_gb_at(nc: int) -> float:
+            return _kv_for_ctx(
+                n_ctx=nc, block_count=total_layers - 1,
+                head_count_kv=int(meta.get("head_count_kv") or 0),
+                rope_dim=int(meta.get("rope_dimension_count") or 0),
+                embedding_length=int(meta.get("embedding_length") or 0),
+                head_count=int(meta.get("head_count") or 0),
+            )
+
+        if int(CONFIG.n_ctx) > 0:
+            resolved_n_ctx = max(512, int(CONFIG.n_ctx))
+        else:
+            trained = int(meta.get("context_length") or 0)
+            target = min(_PERF_CTX_CAP, trained) if trained else 8192
+            target = max(4096, target)
+            # Memory budget for KV: a conservative half of the larger free pool
+            # (VRAM if a GPU is present, else system RAM). Shrink target until
+            # its KV cache fits, never below 4096.
+            _avail_ram_gb, _ = _ram_gb()
+            _gpus_ctx = detect_nvidia_gpus()
+            _free_vram_ctx = max((float(g.get("free_gb", 0.0)) for g in _gpus_ctx), default=0.0)
+            budget_gb = max(_free_vram_ctx, _avail_ram_gb or 0.0) * 0.5
+            while target > 4096 and budget_gb > 0 and _kv_gb_at(target) > budget_gb:
+                target //= 2
+            resolved_n_ctx = max(4096, (target // 1024) * 1024)
+            sys.stderr.write(
+                f"[ctx] Auto context = {resolved_n_ctx} "
+                f"(trained={trained or 'unknown'}, KV~{_kv_gb_at(resolved_n_ctx):.1f}GB, "
+                f"budget~{budget_gb:.1f}GB)\n"
+            )
+
         # Apple Silicon uses Metal with a unified memory pool — there's no
         # separate VRAM to budget against, but the Metal command-buffer
         # allocator has a per-process ceiling well below total RAM. Full
@@ -601,15 +640,10 @@ class LlamaCppEngine(LLMEngine):
             #
             # Uses the same `estimate_kv_cache_gb` we expose on /system/info,
             # so the value matches what the slider's UI shows as the safe max.
-            from .gguf_meta import estimate_kv_cache_gb as _kv_est
-            kv_cache = _kv_est(
-                n_ctx=int(CONFIG.n_ctx) if CONFIG.n_ctx else DEFAULT_N_CTX,
-                block_count=total_layers - 1,
-                head_count_kv=int(meta.get("head_count_kv") or 0),
-                rope_dim=int(meta.get("rope_dimension_count") or 0),
-                embedding_length=int(meta.get("embedding_length") or 0),
-                head_count=int(meta.get("head_count") or 0),
-            )
+            # Reserve KV for the ACTUAL context we'll use (resolved above),
+            # not a fixed default — otherwise Auto context could pick a large
+            # window the offload never budgeted VRAM for, and OOM.
+            kv_cache = _kv_gb_at(resolved_n_ctx)
             # Query GPU at THIS moment (don't depend on outer scope — the
             # general gpu_free variable isn't computed until after this
             # block runs for the partial-offload precheck).
@@ -728,7 +762,10 @@ class LlamaCppEngine(LLMEngine):
                     f"type={type(chat_handler).__name__}, "
                     f"id={id(chat_handler)}\n"
                 )
-        n_ctx = max(512, int(CONFIG.n_ctx) if CONFIG.n_ctx else DEFAULT_N_CTX)
+        n_ctx = resolved_n_ctx
+        # Expose the resolved context so the loader snapshot (and thus the UI
+        # wheel + Settings field) can show the real number even in Auto mode.
+        self.n_ctx_resolved = n_ctx
         n_threads = max(1, (os.cpu_count() or 4) // 2)
 
         # Wrap the user callback to accept any signature variant that newer

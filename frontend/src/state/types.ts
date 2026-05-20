@@ -80,6 +80,9 @@ export interface ModelStatus {
   // True only when the loaded tokenizer recognises a `<think>` token. Used
   // to gate the Smart/Quick picker so it disappears on non-thinking models.
   supportsThinking?: boolean;
+  // Actual context window the engine loaded with (the resolved value when
+  // n_ctx is on Auto). null when no model is loaded.
+  nCtx?: number | null;
 }
 
 export interface Settings {

@@ -21,19 +21,63 @@ const TAB_DEFS: { key: TabKey; label: string; icon: React.ComponentType<{ classN
 
 export default function SettingsModal({ onClose }: Props) {
   const { settings, setSettings } = useStore();
+  const reloadModel = useStore((s) => s.reloadModel);
+  const modelLoaded = useStore((s) => s.modelStatus.status === 'loaded');
   const [tab, setTab] = useState<TabKey>('model');
 
-  // Esc closes
+  // Snapshot the reload-only settings as the saved baseline, so we can detect
+  // unsaved changes on close and offer to revert them. (Temperature etc. apply
+  // live and never need this.)
+  const [baseline, setBaseline] = useState(() => ({
+    nCtx: settings.nCtx,
+    gpuOffloadGb: settings.gpuOffloadGb,
+  }));
+  const [confirmClose, setConfirmClose] = useState(false);
+
+  // Whenever the model actually (re)loads — whether via the close dialog OR the
+  // inline "Save & reload" banner — the current settings BECOME the saved
+  // baseline, so we don't then falsely report them as unsaved. Keyed on the
+  // loaded engine identity.
+  const loadedKey = useStore((s) => s.modelStatus.loadedKey);
   useEffect(() => {
-    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    setBaseline({ nCtx: settings.nCtx, gpuOffloadGb: settings.gpuOffloadGb });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadedKey]);
+
+  const dirty = modelLoaded && (
+    settings.nCtx !== baseline.nCtx || settings.gpuOffloadGb !== baseline.gpuOffloadGb
+  );
+
+  // Intercept close: if there are unsaved reload-only changes, ask first.
+  function requestClose() {
+    if (dirty) setConfirmClose(true);
+    else onClose();
+  }
+  async function saveAndClose() {
+    setConfirmClose(false);
+    await reloadModel();
+    onClose();
+  }
+  function discardAndClose() {
+    // Revert the live settings (this also pushes to the backend, so the loaded
+    // model is back in sync and the "Save & reload" banner clears).
+    void setSettings({ nCtx: baseline.nCtx, gpuOffloadGb: baseline.gpuOffloadGb });
+    setConfirmClose(false);
+    onClose();
+  }
+
+  // Esc closes (guarded by the unsaved-changes check).
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') requestClose(); };
     window.addEventListener('keydown', fn);
     return () => window.removeEventListener('keydown', fn);
-  }, [onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty, onClose]);
 
   return (
     <div
       className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
-      onClick={onClose}
+      onClick={requestClose}
     >
       <div
         className="w-[820px] max-h-[85vh] bg-app border bd-strong rounded-2xl shadow-2xl flex overflow-hidden"
@@ -65,7 +109,7 @@ export default function SettingsModal({ onClose }: Props) {
               {TAB_DEFS.find((t) => t.key === tab)?.label}
             </h2>
             <button
-              onClick={onClose}
+              onClick={requestClose}
               className="p-1.5 rounded-md text-[var(--fg-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--fg)]"
               title="Close (Esc)"
             >
@@ -125,7 +169,7 @@ export default function SettingsModal({ onClose }: Props) {
                       className="slim w-full"
                     />
                     <div className="text-[11px] text-[var(--fg-dim)] mt-1 flex justify-between">
-                      <span>0 · deterministic</span><span>1 · default</span><span>2 · wild</span>
+                      <span>0 · precise</span><span>0.2 · default</span><span>2 · wild</span>
                     </div>
                   </Field>
                 </Section>
@@ -218,6 +262,35 @@ export default function SettingsModal({ onClose }: Props) {
           </div>
         </div>
       </div>
+
+      {confirmClose && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60"
+          onClick={(e) => { e.stopPropagation(); }}
+        >
+          <div className="w-[400px] max-w-[90vw] rounded-2xl border bd-strong bg-app shadow-2xl p-5">
+            <div className="text-[14px] font-medium text-[var(--fg)] mb-1">Unsaved changes</div>
+            <p className="text-[12.5px] text-[var(--fg-muted)] leading-relaxed mb-4">
+              You changed settings that need a model reload to apply (context window
+              and/or GPU offload). Save and reload now, or discard the changes?
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={discardAndClose}
+                className="px-3 py-1.5 rounded-md text-[12.5px] border bd-soft text-[var(--fg-muted)] hover:text-[var(--fg)] hover:bd-strong"
+              >
+                Discard
+              </button>
+              <button
+                onClick={saveAndClose}
+                className="px-3 py-1.5 rounded-md text-[12.5px] bg-emerald-600 hover:bg-emerald-500 text-white"
+              >
+                Save &amp; reload
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -496,21 +569,45 @@ function useSystemInfo() {
 function ContextWindowField() {
   const { settings, setSettings } = useStore();
   const info = useSystemInfo();
+  const loadedNCtx = useStore((s) => s.modelStatus.nCtx);
   const trained = info?.model?.trainedContext ?? 0;
   const blockCount = info?.model?.blockCount ?? 32;
   // Slider goes up to the model's trained context, with a floor of 32K so
   // models without metadata still get reasonable range, and a hard cap of
   // 262144 (256K) for sanity.
   const sliderMax = Math.min(262144, Math.max(32768, trained || 32768));
-  const value = Math.min(settings.nCtx, sliderMax);
+  // nCtx <= 0 is the Auto sentinel: the backend sizes the window from memory
+  // at load time. Show the resolved value (from the loaded model) when we
+  // have it; fall back to a sensible slider position otherwise.
+  const isAuto = settings.nCtx <= 0;
+  const value = isAuto
+    ? (loadedNCtx && loadedNCtx > 0 ? loadedNCtx : Math.min(8192, sliderMax))
+    : Math.min(settings.nCtx, sliderMax);
   const kvGb = estimateKvCacheGb(value, blockCount, info);
   const kvWarn = kvGb > 8;
   return (
     <Field
       label={
-        `Context window — ${value.toLocaleString()} tokens${
-          trained ? ` (model trained for ${trained.toLocaleString()})` : ''
-        }`
+        <div className="flex items-center justify-between gap-2">
+          <span>
+            {`Context window — ${value.toLocaleString()} tokens`}
+            {isAuto && <span className="ml-2 text-[10px] text-emerald-400 uppercase tracking-wide">auto</span>}
+            {trained ? <span className="text-[var(--fg-dim)]"> · trained {trained.toLocaleString()}</span> : ''}
+          </span>
+          <button
+            onClick={() => setSettings({ nCtx: isAuto ? value : 0 })}
+            className={`text-[10.5px] px-2 py-0.5 rounded border transition ${
+              isAuto
+                ? 'bg-emerald-700/30 border-emerald-700/60 text-emerald-300 hover:bg-emerald-700/50'
+                : 'bd-soft text-[var(--fg-muted)] hover:text-[var(--fg)] hover:bd-strong'
+            }`}
+            title={isAuto
+              ? 'Auto-sizing the context to fit memory at load. Click to set it manually.'
+              : 'Let the app pick the largest context the system can handle.'}
+          >
+            {isAuto ? 'Auto on' : 'Auto'}
+          </button>
+        </div>
       }
     >
       <input
@@ -519,8 +616,9 @@ function ContextWindowField() {
         max={sliderMax}
         step={1024}
         value={value}
+        disabled={isAuto}
         onChange={(e) => setSettings({ nCtx: parseInt(e.target.value, 10) })}
-        className="slim w-full"
+        className={`slim w-full ${isAuto ? 'opacity-60 pointer-events-none' : ''}`}
       />
       <div className={`mt-1 text-[11px] ${kvWarn ? 'text-amber-400' : 'text-[var(--fg-dim)]'}`}>
         Memory cost: <b>~{kvGb.toFixed(1)} GB</b>
@@ -653,7 +751,7 @@ function GpuOffloadField() {
 }
 
 function ModelStatusPanel() {
-  const { modelStatus, loadModel, unloadModel, settings } = useStore();
+  const { modelStatus, loadModel, unloadModel, reloadModel, settings } = useStore();
 
   const dot =
     modelStatus.status === 'loaded'
@@ -733,8 +831,16 @@ function ModelStatusPanel() {
 
       {modelStatus.status === 'loaded' &&
         modelStatus.loadedKey !== modelStatus.currentKey && (
-          <div className="mt-2 text-[11px] text-amber-400">
-            Settings changed — click Eject then Load to apply.
+          <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-amber-700/40 bg-amber-900/15 px-3 py-2">
+            <span className="text-[11.5px] text-amber-300">
+              Settings changed — reload the model to apply.
+            </span>
+            <button
+              onClick={reloadModel}
+              className="shrink-0 px-3 py-1 rounded-md text-[11.5px] bg-amber-600 hover:bg-amber-500 text-white"
+            >
+              Save &amp; reload
+            </button>
           </div>
         )}
       {modelStatus.status === 'error' && (

@@ -109,10 +109,26 @@ class ModelLoader:
             "visionActive": vision_active,
             "visionHandler": vision_handler,
             "supportsThinking": supports_thinking,
+            # Actual context window the engine loaded with — lets the UI show
+            # the real number when n_ctx is on Auto (0).
+            "nCtx": getattr(self.engine, "n_ctx_resolved", None),
         }
 
     def is_loaded(self) -> bool:
-        return self.engine is not None and self.engine_key == _current_key()
+        # "Is there a usable engine in memory?" — NOT "do current settings
+        # match it?". A pending change to a reload-only setting (n_ctx / GPU
+        # offload) makes _current_key() diverge from engine_key, but the loaded
+        # engine still works fine with the settings it was BUILT with. Gating
+        # inference on the key would make the model look "not loaded" the moment
+        # the user nudges a slider, which is the crash they were seeing. The
+        # "settings changed, reload to apply" signal lives in the snapshot
+        # (loadedKey != currentKey) and drives the Save & reload button.
+        return self.engine is not None
+
+    def is_stale(self) -> bool:
+        """Engine is loaded but built with settings that no longer match
+        CONFIG — i.e. a reload is needed to apply the change."""
+        return self.engine is not None and self.engine_key != _current_key()
 
     # ─── actions ──────────────────────────────────────────────────────
     async def load(self) -> Snapshot:

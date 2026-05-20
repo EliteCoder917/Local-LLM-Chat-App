@@ -484,7 +484,10 @@ export function InputBox({
     return n;
   }, [settings.systemPrompt, sendsImageBytes, visionActive, activeMessages, tokenCount]);
   const ctxUsed = exactCtxUsed ?? fallbackCtxUsed;
-  const ctxMax = settings.nCtx || 4096;
+  // On Auto (nCtx <= 0) use the model's resolved window from status; fall back
+  // to 4096 only when nothing is loaded yet.
+  const loadedNCtx = useStore((s) => s.modelStatus.nCtx);
+  const ctxMax = settings.nCtx > 0 ? settings.nCtx : (loadedNCtx || 4096);
   const ctxPct = Math.min(100, Math.round((ctxUsed / ctxMax) * 100));
   const ctxIsExact = exactCtxUsed != null;
 

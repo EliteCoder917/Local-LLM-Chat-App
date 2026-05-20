@@ -39,6 +39,7 @@ interface State {
   refreshModelStatus: () => Promise<void>;
   loadModel: () => Promise<void>;
   unloadModel: () => Promise<void>;
+  reloadModel: () => Promise<void>;
 
   refreshLibrary: () => Promise<void>;
   selectLibraryModel: (id: string) => Promise<void>;
@@ -82,9 +83,13 @@ const DEFAULT_SETTINGS: Settings = {
   workspace: '',
   agentMode: true,
   maxIterations: 10,
-  temperature: 0.7,
+  // 0.2 keeps responses focused and accurate. Higher temps (the old 0.7
+  // default) make reasoning models over-think and wander, hurting accuracy.
+  temperature: 0.2,
   systemPrompt: 'You are a helpful local AI assistant. Be concise and accurate.',
-  nCtx: 4096,
+  // 0 = Auto: the backend picks the largest context the system can handle
+  // while keeping good performance (capped at the model's trained window).
+  nCtx: 0,
   // -1 is the "Auto" sentinel: backend picks the largest offload that fits
   // alongside KV cache + compute buffer at load time. Better default than 0
   // (CPU-only) since most users want GPU used by default.
@@ -176,6 +181,11 @@ export const useStore = create<State>((set, get) => ({
     // Users who deliberately picked CPU-only can re-pick it on the slider; this
     // only catches users who never touched the field.
     if (merged.gpuOffloadGb === 0) merged.gpuOffloadGb = -1;
+    // Migrate the old hard-coded defaults to the new ones, but only when the
+    // stored value is EXACTLY the previous default (i.e. the user never
+    // changed it). Deliberate choices are preserved.
+    if (merged.temperature === 0.7) merged.temperature = 0.2;
+    if (merged.nCtx === 4096) merged.nCtx = 0;
     const perms = await api.perms.get();
     const convs = get().conversations;
     set({
@@ -356,6 +366,14 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
+  // Apply settings that only take effect at construction (n_ctx, GPU offload).
+  // load() is a no-op when a model is already loaded, so we must eject first.
+  async reloadModel() {
+    await api.settings.set({ settings: get().settings });
+    await get().unloadModel();
+    await get().loadModel();
+  },
+
   async refreshLibrary() {
     try {
       const r = await fetch(`${BACKEND_HTTP}/library`);
@@ -451,6 +469,17 @@ export const useStore = create<State>((set, get) => ({
     const next = { ...get().settings, ...p };
     set({ settings: next, workspace: next.workspace ?? get().workspace });
     await api.settings.set({ settings: next });
+    // If a reload-requiring setting (n_ctx / GPU offload) changed while a
+    // model is loaded, refresh status so the backend's currentKey diverges
+    // from loadedKey — that's what surfaces the "Save & reload" prompt. The
+    // settings reach the backend over a separate WS channel, so give it a
+    // brief moment to apply before we read the new currentKey.
+    if (
+      get().modelStatus.status === 'loaded'
+      && ('nCtx' in p || 'gpuOffloadGb' in p || 'modelPath' in p)
+    ) {
+      setTimeout(() => { void get().refreshModelStatus(); }, 300);
+    }
   },
 
   async setPerm(k, v) {

@@ -547,7 +547,8 @@ async function maybeCompact(): Promise<void> {
     return;
   }
   const s = useStore.getState();
-  const nCtx = s.settings.nCtx || 4096;
+  // On Auto (nCtx <= 0) the real window is the model's resolved value.
+  const nCtx = s.settings.nCtx > 0 ? s.settings.nCtx : (s.modelStatus.nCtx || 4096);
   const budget = Math.max(1024, Math.floor(nCtx * COMPACT_THRESHOLD)) - RESERVE_FOR_REPLY;
   // Exact tokens when the model is loaded; rough fallback otherwise so the
   // user with an unloaded model still gets sensible behavior (probably a

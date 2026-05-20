@@ -22,8 +22,8 @@ class Config:
     thinking_mode: str = "smart"    # "smart" | "quick" | "deep" — Qwen-style reasoning toggle
     ollama_url: str = "http://127.0.0.1:11434"
     model_path: str = ""
-    temperature: float = 0.7
-    n_ctx: int = 4096           # context window for llama-cpp engine
+    temperature: float = 0.2    # focused/accurate; high temps make models wander
+    n_ctx: int = 0              # 0 = Auto (engine sizes it from memory at load)
     gpu_offload_gb: float = -1.0  # -1 = Auto; engine picks max fittable at load
     system_prompt: str = (
         "You are a helpful local AI assistant. Be concise and accurate."

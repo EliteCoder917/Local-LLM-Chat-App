@@ -146,24 +146,21 @@ class AgentRunner:
                 await self._emit({"type": "message-end", "msgId": msg_id})
                 return
 
-            # If the model produced zero deltas (sampling immediately picked
-            # EOS, prompt overflow caused empty output, etc.), the bubble
-            # would be invisibly empty. Replace it with a visible explanation
-            # so the user knows what happened and can retry / shorten the
-            # conversation instead of staring at a blank screen.
+            # If the turn produced zero deltas the bubble would be invisibly
+            # empty. Fill it with a short marker so the user isn't left staring
+            # at a blank screen. Distinguish the two causes:
             if delta_count == 0 and not assistant_text:
-                # Honest message — the most common cause is the model sampling
-                # the end-of-turn token on the first step (random sampling
-                # variance, or aggressive fine-tunes biased toward brevity
-                # in /no_think mode). Context overflow is RARE and we used
-                # to blame that misleadingly; now we name the likely cause
-                # and suggest the most useful action.
-                hint = (
-                    "_(no reply — the model produced no output this turn. "
-                    "This sometimes happens in **Quick** mode with fine-tunes "
-                    "trained for brief answers. Try sending the message "
-                    "again, switching to **Smart** mode, or rephrasing.)_"
-                )
+                if self._cancel.is_set():
+                    # The user pressed Stop before any token arrived — not an
+                    # error, just an intentional interruption.
+                    hint = "_(stopped)_"
+                else:
+                    # Genuine empty output — usually the model sampled the
+                    # end-of-turn token on the very first step.
+                    hint = (
+                        "_(no reply — the model produced no output this turn. "
+                        "Try sending the message again or rephrasing.)_"
+                    )
                 await self._emit({
                     "type": "message-delta",
                     "msgId": msg_id,
