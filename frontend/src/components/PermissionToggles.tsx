@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  Eye, PenSquare, Trash2, Code2, TerminalSquare, Play, Globe, Brain,
+  Eye, PenSquare, Trash2, TerminalSquare, Globe, Brain, ExternalLink,
 } from 'lucide-react';
 import { useStore } from '../state/store';
 import Toggle from './Toggle';
@@ -17,11 +17,10 @@ const ROWS: Row[] = [
   { key: 'file.read',   icon: Eye,             label: 'Read files',       desc: 'The model can read files in your workspace.' },
   { key: 'file.write',  icon: PenSquare,       label: 'Write files',      desc: 'Create or overwrite files in the workspace.', danger: true },
   { key: 'file.delete', icon: Trash2,          label: 'Delete files',     desc: 'Remove files or folders. Destructive.',       danger: true },
-  { key: 'exec.python', icon: Code2,           label: 'Run Python',       desc: 'Execute Python code in a sandboxed subprocess.', danger: true },
-  { key: 'exec.shell',  icon: TerminalSquare,  label: 'Run shell',        desc: 'Execute shell commands (PowerShell on Windows).', danger: true },
-  { key: 'exec.script', icon: Play,            label: 'Run scripts',      desc: 'Execute saved scripts by path.',              danger: true },
+  { key: 'exec.code',   icon: TerminalSquare,  label: 'Run code & commands', desc: 'Execute Python, shell commands (PowerShell), and saved scripts.', danger: true },
+  { key: 'system.open', icon: ExternalLink,    label: 'Open apps & files', desc: 'Launch programs, open files/folders, or open URLs (e.g. "open Steam").', danger: true },
   { key: 'network',     icon: Globe,           label: 'Network access',   desc: 'Allow tools that make outbound network requests.', danger: true },
-  { key: 'memory',      icon: Brain,           label: 'Persistent memory', desc: 'Read / write notes that survive across all chats.', danger: true },
+  { key: 'memory',      icon: Brain,           label: 'Persistent memory', desc: 'Read / write notes that survive across all chats.' },
 ];
 
 export default function PermissionToggles() {

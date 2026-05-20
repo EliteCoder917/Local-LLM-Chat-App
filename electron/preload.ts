@@ -15,6 +15,15 @@ const api = {
   perms: {
     get: () => ipcRenderer.invoke('perms:get'),
     set: (key: string, value: boolean) => ipcRenderer.invoke('perms:set', key, value),
+    // Reply to a custom in-app permission modal. `remember` persists the perm.
+    respond: (reqId: string, tool: string, granted: boolean, remember: boolean) =>
+      ipcRenderer.invoke('perms:respond', reqId, tool, granted, remember),
+    // Subscribe to backend permission requests (renders the custom modal).
+    onRequest: (cb: (req: unknown) => void) => {
+      const fn = (_: unknown, req: unknown) => cb(req);
+      ipcRenderer.on('permission:request', fn);
+      return () => ipcRenderer.removeListener('permission:request', fn);
+    },
   },
   fs: {
     pickFolder: () => ipcRenderer.invoke('fs:pickFolder'),

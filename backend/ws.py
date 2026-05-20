@@ -86,6 +86,12 @@ async def ws_endpoint(socket: WebSocket) -> None:
         if not isinstance(agent_override, bool):
             agent_override = None
 
+        # Which tool group to expose: 'cowork' | 'search' | 'all' | 'normal'.
+        # Drives tool filtering in the agent loop (Search mode = web tools only).
+        tool_mode = params.get("toolMode")
+        if not isinstance(tool_mode, str):
+            tool_mode = None
+
         if current_task and not current_task.done():
             runner.cancel()
             try:
@@ -101,7 +107,7 @@ async def ws_endpoint(socket: WebSocket) -> None:
                 pass
 
         current_task = asyncio.create_task(
-            runner.run(history, agent_mode=agent_override),
+            runner.run(history, agent_mode=agent_override, tool_mode=tool_mode),
         )
         return "ok"
 

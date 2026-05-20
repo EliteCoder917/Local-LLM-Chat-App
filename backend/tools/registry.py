@@ -22,6 +22,7 @@ from ..permissions import permission_manager
 from . import files as files_tools
 from . import exec as exec_tools
 from . import memory as memory_tools
+from . import web as web_tools
 
 
 Handler = Callable[..., Union[Any, Awaitable[Any]]]
@@ -34,6 +35,11 @@ class Tool:
     schema: Dict[str, Any]
     handler: Handler
     permission: Optional[str]
+    # Coarse grouping used to decide which tools a given chat mode exposes:
+    #   file / exec / memory → Cowork mode (acting on the local system)
+    #   web                  → Search mode (internet)
+    # The Code tab and CONFIG.agent_mode expose everything.
+    category: str = "file"
 
 
 REGISTRY: Dict[str, Tool] = {}
@@ -46,14 +52,14 @@ def register(tool: Tool) -> None:
 # ─── file tools ───────────────────────────────────────────────────────
 register(Tool(
     name="read_file",
-    description="Read a text file inside the workspace.",
-    schema={"path": {"type": "string", "description": "Relative path"}},
+    description="Read a text file. Accepts an absolute path (anywhere on the machine) or a path relative to the open workspace.",
+    schema={"path": {"type": "string", "description": "Absolute path, or relative to the workspace"}},
     handler=files_tools.read_file,
     permission="file.read",
 ))
 register(Tool(
     name="write_file",
-    description="Write content to a file (creates dirs as needed).",
+    description="Write content to a file (creates dirs as needed). Absolute path or relative to the workspace.",
     schema={
         "path": {"type": "string"},
         "content": {"type": "string"},
@@ -91,7 +97,7 @@ register(Tool(
 ))
 register(Tool(
     name="list_dir",
-    description="List entries in a directory (relative to workspace).",
+    description="List entries in a directory. Accepts an absolute path or one relative to the open workspace.",
     schema={"path": {"type": "string", "default": "."}},
     handler=files_tools.list_dir,
     permission="file.read",
@@ -117,7 +123,8 @@ register(Tool(
         "timeout": {"type": "number", "default": 20},
     },
     handler=exec_tools.run_python,
-    permission="exec.python",
+    permission="exec.code",
+    category="exec",
 ))
 register(Tool(
     name="run_shell",
@@ -127,7 +134,8 @@ register(Tool(
         "timeout": {"type": "number", "default": 20},
     },
     handler=exec_tools.run_shell,
-    permission="exec.shell",
+    permission="exec.code",
+    category="exec",
 ))
 register(Tool(
     name="run_script",
@@ -137,7 +145,19 @@ register(Tool(
         "timeout": {"type": "number", "default": 30},
     },
     handler=exec_tools.run_script,
-    permission="exec.script",
+    permission="exec.code",
+    category="exec",
+))
+register(Tool(
+    name="open_app",
+    description="Open/launch an app, file, folder, or URL and leave it running. Use this to start programs (e.g. \"steam\", \"chrome\"), open a document, reveal a folder, or open a web link. Args: target (app name, path, or URL), optional args list.",
+    schema={
+        "target": {"type": "string", "description": "App name, file/folder path, or URL"},
+        "args": {"type": "array", "description": "Optional launch arguments"},
+    },
+    handler=exec_tools.open_app,
+    permission="system.open",
+    category="exec",
 ))
 
 # ─── memory tools ─────────────────────────────────────────────────────
@@ -147,6 +167,7 @@ register(Tool(
     schema={"key": {"type": "string"}},
     handler=memory_tools.get_memory,
     permission="memory",
+    category="memory",
 ))
 register(Tool(
     name="set_memory",
@@ -154,6 +175,7 @@ register(Tool(
     schema={"key": {"type": "string"}, "value": {}},
     handler=memory_tools.set_memory,
     permission="memory",
+    category="memory",
 ))
 register(Tool(
     name="list_memory",
@@ -161,6 +183,7 @@ register(Tool(
     schema={},
     handler=memory_tools.list_memory,
     permission="memory",
+    category="memory",
 ))
 register(Tool(
     name="delete_memory",
@@ -168,11 +191,58 @@ register(Tool(
     schema={"key": {"type": "string"}},
     handler=memory_tools.delete_memory,
     permission="memory",
+    category="memory",
+))
+
+# ─── web tools (Search mode) ──────────────────────────────────────────
+register(Tool(
+    name="web_search",
+    description="Search the web (DuckDuckGo) and return titles, URLs, and snippets. Use this to find current information online.",
+    schema={
+        "query": {"type": "string"},
+        "max_results": {"type": "integer", "default": 5},
+    },
+    handler=web_tools.web_search,
+    permission="network",
+    category="web",
+))
+register(Tool(
+    name="web_fetch",
+    description="Fetch a web page and return its readable text content. Use after web_search to read a result in full.",
+    schema={
+        "url": {"type": "string"},
+        "max_chars": {"type": "integer", "default": 8000},
+    },
+    handler=web_tools.web_fetch,
+    permission="network",
+    category="web",
 ))
 
 
 def list_tools() -> Dict[str, Tool]:
     return REGISTRY
+
+
+# Which tool categories each chat/tool mode exposes.
+_MODE_CATEGORIES = {
+    "all": None,                              # everything (Code tab)
+    "cowork": {"file", "exec", "memory"},     # act on the local system
+    "search": {"web"},                        # internet only
+}
+
+
+def tools_for_mode(tool_mode: str | None) -> Dict[str, Tool]:
+    """Subset of the registry a given chat mode is allowed to use.
+
+    `None`/'all' → everything. 'cowork' → file/exec/memory. 'search' → web.
+    Anything else (incl. 'normal') → no tools.
+    """
+    if tool_mode in (None, "all"):
+        return REGISTRY
+    cats = _MODE_CATEGORIES.get(tool_mode)
+    if not cats:
+        return {}
+    return {n: t for n, t in REGISTRY.items() if t.category in cats}
 
 
 async def dispatch_tool(name: str, args: Dict[str, Any]) -> str:

@@ -31,20 +31,40 @@ export function parseThinking(text: string): Segment[] {
     }
     const tagName = open[1];
     const openEnd = tagStart + open[0].length;
-    const closeRe = new RegExp(`</${tagName}>`, 'i');
-    const close = text.slice(openEnd).match(closeRe);
-    if (!close || close.index === undefined) {
-      // Unclosed — model is still emitting its thought stream.
-      out.push({
-        kind: 'thinking',
-        content: text.slice(openEnd),
-        streaming: true,
-      });
-      break;
+
+    // Bound this block at the next OPEN tag so genuinely separate think
+    // blocks still parse independently.
+    const after = text.slice(openEnd);
+    const nextOpen = after.match(OPEN_RE);
+    const blockEnd = nextOpen && nextOpen.index !== undefined
+      ? openEnd + nextOpen.index
+      : text.length;
+    const block = text.slice(openEnd, blockEnd);
+
+    // Match the LAST close in the block, not the first. Quick mode's
+    // budget can force an early `</think>` mid-reasoning, but this fine-tune
+    // ignores it and keeps thinking until it emits its OWN `</think>`. Hiding
+    // only to the first close leaks that continued reasoning as visible text;
+    // matching the last close keeps the whole thought stream collapsed.
+    const closeRe = new RegExp(`</${tagName}>`, 'ig');
+    let lastIdx = -1;
+    let lastLen = 0;
+    let m: RegExpExecArray | null;
+    while ((m = closeRe.exec(block)) !== null) {
+      lastIdx = m.index;
+      lastLen = m[0].length;
     }
-    const closeStart = openEnd + close.index;
-    out.push({ kind: 'thinking', content: text.slice(openEnd, closeStart) });
-    i = closeStart + close[0].length;
+    if (lastIdx === -1) {
+      // No close yet — model is still emitting its thought stream.
+      out.push({ kind: 'thinking', content: block, streaming: true });
+      i = blockEnd;
+      continue;
+    }
+    // Drop any interior (budget-forced) `</think>` from the displayed thought
+    // so the collapsed block doesn't show a stray tag mid-text.
+    const thought = block.slice(0, lastIdx).replace(new RegExp(`</${tagName}>`, 'ig'), '');
+    out.push({ kind: 'thinking', content: thought });
+    i = openEnd + lastIdx + lastLen;
   }
   return out;
 }

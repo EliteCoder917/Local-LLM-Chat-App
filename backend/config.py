@@ -35,9 +35,8 @@ class Config:
         "file.read": True,
         "file.write": False,
         "file.delete": False,
-        "exec.python": False,
-        "exec.shell": False,
-        "exec.script": False,
+        "exec.code": False,
+        "system.open": False,
         "network": False,
         "memory": False,
     })

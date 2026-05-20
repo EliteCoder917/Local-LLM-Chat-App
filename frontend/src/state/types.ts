@@ -106,9 +106,15 @@ export interface Settings {
   // model skips reasoning. For models without thinking support the UI hides
   // this control entirely.
   thinkingMode: 'smart' | 'quick';
+  // Chat behaviour mode (replaces the old Smart/Quick thinking picker):
+  //   normal — pure chat, no tools
+  //   cowork — agent tools enabled in chat (read/write/edit files, like Code tab)
+  //   search — web search + page fetch (not wired yet; shown as "soon")
+  chatMode: ChatMode;
 }
 
 export type ThinkingMode = 'smart' | 'quick';
+export type ChatMode = 'normal' | 'cowork' | 'search';
 
 // Vision handler slugs accepted by the backend. Keep in sync with
 // `LlamaCppEngine._HANDLER_BY_SLUG` in llama_cpp_engine.py.

@@ -1,7 +1,14 @@
 """File-system tools.
 
-All paths are resolved against `CONFIG.workspace` and rejected if they escape
-it (no `..` traversal).
+Path resolution:
+    * Absolute paths are used as-is — the agent can read/write anywhere on the
+      machine (gated only by the file.* permission toggles). This is a local,
+      single-user desktop assistant, so the old hard workspace sandbox got in
+      the way more than it helped (couldn't open a file that wasn't already in
+      the workspace folder).
+    * Relative paths resolve against `CONFIG.workspace` when one is set; if no
+      workspace is open, a relative path is an error (the agent should pass an
+      absolute path instead).
 """
 from __future__ import annotations
 
@@ -13,20 +20,20 @@ from ..config import CONFIG
 
 
 def _resolve(path: str) -> str:
-    """Resolve `path` inside the workspace. Raise on escape."""
+    """Resolve `path` to an absolute filesystem path.
+
+    Absolute input → used directly (anywhere on the machine). Relative input →
+    joined onto the workspace, or rejected if no workspace is open.
+    """
+    if os.path.isabs(path):
+        return os.path.abspath(path)
     if not CONFIG.workspace:
-        raise ValueError("No workspace open. Open a folder before using file tools.")
+        raise ValueError(
+            f"Relative path '{path}' given but no workspace is open. "
+            "Pass an absolute path, or open a folder first."
+        )
     base = os.path.abspath(CONFIG.workspace)
-    target = os.path.abspath(
-        path if os.path.isabs(path) else os.path.join(base, path)
-    )
-    try:
-        common = os.path.commonpath([base, target])
-    except ValueError:
-        raise ValueError(f"Path '{path}' is outside the workspace") from None
-    if common != base:
-        raise ValueError(f"Path '{path}' is outside the workspace")
-    return target
+    return os.path.abspath(os.path.join(base, path))
 
 
 def read_file(path: str) -> str:

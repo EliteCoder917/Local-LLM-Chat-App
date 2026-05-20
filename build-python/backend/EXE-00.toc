@@ -72,7 +72,7 @@
  [],
  False,
  False,
- 1779225750,
+ 1779311734,
  [('run.exe',
    'F:\\AI chat '
    'app\\.venv\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\run.exe',

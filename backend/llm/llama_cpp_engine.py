@@ -234,6 +234,8 @@ class _VisionHandlerWrapper:
                 stream=cc_kwargs.get("stream", False),
                 model_name=cc_kwargs.get("model") or llama.model_path,
                 repeat_penalty=cc_kwargs.get("repeat_penalty", 1.0),
+                frequency_penalty=cc_kwargs.get("frequency_penalty", 0.0),
+                presence_penalty=cc_kwargs.get("presence_penalty", 0.0),
             )
 
         llama.create_completion = _create_completion_direct
@@ -255,6 +257,8 @@ def _sample_from_current_state(
     stream: bool,
     model_name: str,
     repeat_penalty: float,
+    frequency_penalty: float = 0.0,
+    presence_penalty: float = 0.0,
 ):
     """Sample tokens from the model's current KV state (post-mtmd).
 
@@ -310,6 +314,7 @@ def _sample_from_current_state(
     llama._sampler = llama._init_sampler(
         top_k=top_k, top_p=top_p, min_p=min_p, typical_p=1.0,
         temp=temperature, repeat_penalty=repeat_penalty,
+        frequency_penalty=frequency_penalty, presence_penalty=presence_penalty,
     )
 
     def _produce():
@@ -354,26 +359,13 @@ def _sample_from_current_state(
         # branch — we're just limiting it on the working branch.
         quick_mode = CONFIG.thinking_mode == "quick"
         eos_ban_window = 1 if quick_mode else 0  # safety net for sampling lottery
-        think_budget = 100  # max tokens before we force-close any open thinking
-        close_prefill: list[int] = []
-        # We detect natural close by scanning the DECODED text for the literal
-        # `</think>` (or `<|think_end|>`) marker, not by token-ID matching.
-        # The old token-ID approach false-positived because `</think>` is often
-        # a multi-token sequence whose first token is `<` (a very common
-        # character) — that made the budget think the close had already
-        # happened the moment the model emitted any `<`, and never enforced.
-        think_closed_seen = False
-        if quick_mode:
-            try:
-                close_prefill = llama.tokenize(
-                    b"\n</think>\n\n", add_bos=False, special=True,
-                )
-                _vlog(
-                    f"[thinking] Quick (vision path): thinking budget = {think_budget} "
-                    "tokens (text-based close detection).\n"
-                )
-            except Exception as e:  # noqa: BLE001
-                _vlog(f"[thinking] Quick setup failed (non-fatal): {e}\n")
+        # NOTE: we used to force-inject `</think>` after a 100-token budget here.
+        # It was removed: this fine-tune ignores the injected close and finishes
+        # its full reasoning anyway, which (a) didn't actually reduce thinking
+        # and (b) created a SECOND `</think>` so the continued reasoning leaked
+        # into the visible answer mid-stream. Quick mode now relies on a soft
+        # "think briefly" system nudge (see agent/loop.py); the model emits a
+        # single natural `</think>`, keeping streaming clean.
 
         while generated_count < max_n:
             # User clicked Stop — break the sampling loop so the next prompt
@@ -384,6 +376,7 @@ def _sample_from_current_state(
             tok = llama.sample(
                 top_k=top_k, top_p=top_p, min_p=min_p, typical_p=1.0,
                 temp=temperature, repeat_penalty=repeat_penalty,
+                frequency_penalty=frequency_penalty, presence_penalty=presence_penalty,
                 idx=None,
             )
             if tok in eos_ids:
@@ -427,41 +420,9 @@ def _sample_from_current_state(
             generated_text += piece
             generated_count += 1
 
-            # Detect natural close by SCANNING the generated text for the
-            # literal `</think>` (or `<|think_end|>`) marker. This is robust
-            # even when the marker tokenizes as multiple tokens — the bytes
-            # always appear in the decoded output regardless of how the
-            # tokenizer split them.
-            if quick_mode and not think_closed_seen:
-                try:
-                    text_so_far = generated_text.decode("utf-8", errors="ignore")
-                    if "</think>" in text_so_far or "<|think_end|>" in text_so_far:
-                        think_closed_seen = True
-                        _vlog(
-                            f"[thinking] Quick: model closed think block naturally "
-                            f"at token {generated_count} (under {think_budget} budget).\n"
-                        )
-                except Exception:  # noqa: BLE001
-                    pass
-
-            # Budget exhausted before the model closed </think> on its own —
-            # inject the close marker directly. The model never gets to keep
-            # thinking past this point; its next sample is for the answer.
-            if quick_mode and not think_closed_seen and generated_count >= think_budget and close_prefill:
-                try:
-                    llama.eval(close_prefill)
-                    close_bytes = llama.detokenize(close_prefill)
-                    pending += close_bytes
-                    generated_text += close_bytes
-                    generated_count += len(close_prefill)
-                    think_closed_seen = True
-                    _vlog(
-                        f"[thinking] Quick: budget ({think_budget}) hit at "
-                        f"token {generated_count} — injected </think> close, "
-                        f"model continues with answer.\n"
-                    )
-                except Exception as e:  # noqa: BLE001
-                    _vlog(f"[thinking] budget-close inject failed: {e}\n")
+            # (Quick-mode forced-close removed — see note at the top of this
+            # function. Thinking is now shortened via a soft system nudge, and
+            # the model's single natural </think> marks the end of reasoning.)
             # Stop-string match (rough — only checks the recent suffix).
             if stop_strs:
                 tail = generated_text.decode("utf-8", errors="replace")
@@ -830,6 +791,14 @@ class LlamaCppEngine(LLMEngine):
                     offload_kqv=offload_kqv,
                     chat_format=chat_format,
                     chat_handler=chat_handler,
+                    # Penalty window for repeat/frequency/presence penalties.
+                    # The default (64) is far too small: a thinking model that
+                    # lists ~20 items (~70 tokens) and then re-lists them a few
+                    # hundred tokens later sees the first listing fall OUTSIDE
+                    # the 64-token window, so no penalty applies and it loops by
+                    # re-transcribing. 512 lets the penalties actually catch
+                    # long-span repetition (the folder-listing recursion).
+                    last_n_tokens_size=512,
                     verbose=True,
                     progress_callback=_progress_cb if on_progress else None,
                 )
@@ -1194,78 +1163,43 @@ class LlamaCppEngine(LLMEngine):
         # llama.cpp's tokenizer logging during a fresh Llama() construction.
         self._ensure_think_probed()
 
-        # Logits processors chain:
-        #   1. Abort processor — terminates llama.cpp mid-decode when Stop
-        #      is clicked. Without it, the C-level loop runs until EOS and
-        #      blocks the next prompt.
-        #   2. No-think processor (Quick mode only) — suppresses the
-        #      <think> special token for the first few sample steps so
-        #      the model can't start a reasoning block. Soft markers like
-        #      `/no_think` aren't reliable on aggressive fine-tunes; this
-        #      forces the issue at the logit level.
+        # Abort handling:
+        #   `create_chat_completion` does NOT accept a `stopping_criteria`
+        #   kwarg (only the lower-level create_completion does), and RAISING
+        #   inside a logits_processor doesn't work either — that callback runs
+        #   across a ctypes boundary that swallows Python exceptions
+        #   ("Exception ignored on calling ctypes callback"), so generation
+        #   keeps going. The reliable approach that works with the chat path:
+        #   when Stop is pressed, force the end-of-sequence token by zeroing all
+        #   other logits. The sampler then picks EOS and the generate loop stops
+        #   cleanly on the very next token — no exception, no unsupported kwarg.
         try:
             from llama_cpp import LogitsProcessorList  # type: ignore
-            def _abort_processor(_input_ids, logits):  # noqa: ANN001
-                if self._abort.is_set():
-                    raise _AbortGeneration()
-                return logits
 
+            try:
+                _abort_eos = int(self._llm.token_eos())
+            except Exception:  # noqa: BLE001
+                _abort_eos = None
+
+            def _abort_processor(_input_ids, logits):  # noqa: ANN001
+                if self._abort.is_set() and _abort_eos is not None:
+                    try:
+                        logits[:] = -1e30
+                        logits[_abort_eos] = 0.0  # force EOS on the next sample
+                    except Exception:  # noqa: BLE001
+                        pass
+                return logits
             processors = [_abort_processor]
 
             if CONFIG.thinking_mode == "quick":
-                # Text-path thinking budget. Same simplified strategy as the
-                # vision path: don't try to detect when thinking STARTS (the
-                # `<think>` token detection was unreliable across tokenizers).
-                # Just count tokens generated this turn — if `</think>` hasn't
-                # appeared by `budget`, force it.
-                #
-                # Note: the prompt going in already contains earlier turns'
-                # think blocks (the input_ids array has the full history),
-                # so we need to record the input_ids length at processor-
-                # creation time and use it as the baseline for "tokens since
-                # the model started generating".
-                think_budget = 100
-                think_close_ids: set[int] = set()
-                try:
-                    for s in ("</think>", "<|think_end|>"):
-                        toks = self._llm.tokenize(s.encode("utf-8"), add_bos=False, special=True)
-                        # Only trust SINGLE-token markers. Multi-token markers
-                        # (where `toks[0]` is just `<`) cause false positives —
-                        # the budget thinks the close fired the moment the
-                        # model emits any `<` character.
-                        if len(toks) == 1: think_close_ids.add(int(toks[0]))
-                except Exception:  # noqa: BLE001
-                    pass
-
-                close_id_for_force = next(iter(think_close_ids), None)
-                if close_id_for_force is not None:
-                    sys.stderr.write(
-                        f"[thinking] Quick mode: budget = {think_budget} tokens. "
-                        f"close={sorted(think_close_ids)}.\n"
-                    )
-                    budget_state = {
-                        "baseline": None,        # input_ids length on first call
-                        "closed_seen": False,    # has `</think>` been generated?
-                    }
-                    def _budget_processor(input_ids, logits):  # noqa: ANN001
-                        if budget_state["baseline"] is None:
-                            budget_state["baseline"] = len(input_ids)
-                        generated = len(input_ids) - budget_state["baseline"]
-                        # Did the most-recently-sampled token close the think block?
-                        if not budget_state["closed_seen"] and len(input_ids) > 0:
-                            last = int(input_ids[-1])
-                            if last in think_close_ids:
-                                budget_state["closed_seen"] = True
-                        # Out of budget and still no close — force </think>.
-                        if not budget_state["closed_seen"] and generated >= think_budget:
-                            try:
-                                close_logit = logits[close_id_for_force]
-                                logits[:] = -1e30
-                                logits[close_id_for_force] = max(close_logit, 0.0)
-                            except Exception:  # noqa: BLE001
-                                pass
-                        return logits
-                    processors.append(_budget_processor)
+                # NOTE: the text-path forced-close budget was removed for the
+                # same reason as the vision path — injecting `</think>` at a
+                # token budget didn't stop this fine-tune from reasoning; it
+                # just produced a second close that leaked the continued
+                # reasoning into the visible answer. Quick mode now shortens
+                # thinking via a soft system nudge (agent/loop.py); the model
+                # emits one natural close. We keep only the first-token EOS
+                # safety net below.
 
                 # Text-path EOS safety net for the very first sample step —
                 # covers the random-sampling first-token-is-EOS lottery loss.
@@ -1287,7 +1221,7 @@ class LlamaCppEngine(LLMEngine):
                         return logits
                     processors.append(_eos_ban_processor)
 
-            abort_processors = LogitsProcessorList(processors)
+            abort_processors = LogitsProcessorList(processors) if processors else None
         except Exception:  # noqa: BLE001 — older builds may differ
             abort_processors = None
 
@@ -1335,6 +1269,25 @@ class LlamaCppEngine(LLMEngine):
                     "messages": [{"role": m.role, "content": m.content} for m in messages],
                     "stream": True,
                     "temperature": CONFIG.temperature,
+                    # Anti-repetition (all default to OFF in create_chat_completion):
+                    #  * repeat_penalty 1.1 — multiplicative nudge that breaks
+                    #    short verbatim loops ("Let's try X. I'll try X.").
+                    #  * frequency_penalty 0.4 — ADDITIVE penalty scaling with how
+                    #    often a token already appeared in the penalty window.
+                    #    This is the lever that stops the model RE-LISTING the
+                    #    same set of items (e.g. transcribing 20 folder names
+                    #    two or three times in its reasoning).
+                    #  * presence_penalty 0.1 — small push toward new tokens.
+                    # These work over the widened last_n_tokens_size=512 window
+                    # set at construction, so they catch repetition that spans
+                    # more than the default 64 tokens. top_p/top_k/min_p match
+                    # the vision path so both sample identically.
+                    "repeat_penalty": 1.1,
+                    "frequency_penalty": 0.4,
+                    "presence_penalty": 0.1,
+                    "top_p": 0.95,
+                    "top_k": 40,
+                    "min_p": 0.05,
                 }
                 if abort_processors is not None:
                     kwargs["logits_processor"] = abort_processors

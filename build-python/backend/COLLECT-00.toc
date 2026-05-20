@@ -1,6 +1,8 @@
 ([('LIBBZ2.dll',
    'C:\\Users\\tommy\\miniconda3\\Library\\bin\\LIBBZ2.dll',
    'BINARY'),
+  ('MSVCP140.dll', 'C:\\Users\\tommy\\miniconda3\\MSVCP140.dll', 'BINARY'),
+  ('VCOMP140.DLL', 'C:\\Users\\tommy\\miniconda3\\VCOMP140.DLL', 'BINARY'),
   ('VCRUNTIME140.dll',
    'C:\\Users\\tommy\\miniconda3\\VCRUNTIME140.dll',
    'BINARY'),
@@ -552,6 +554,9 @@
   ('llama_cpp\\lib\\ggml-cuda.dll',
    'F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\ggml-cuda.dll',
    'BINARY'),
+  ('llama_cpp\\lib\\ggml-cuda.lib',
+   'F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\ggml-cuda.lib',
+   'DATA'),
   ('llama_cpp\\lib\\ggml.dll',
    'F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\lib\\ggml.dll',
    'BINARY'),
@@ -629,6 +634,70 @@
   ('llama_cpp\\server\\types.py',
    'F:\\AI chat app\\.venv\\Lib\\site-packages\\llama_cpp\\server\\types.py',
    'DATA'),
+  ('llama_cpp\\~_pycache__\\__init__.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\__init__.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\_ctypes_extensions.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\_ctypes_extensions.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\_ggml.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\_ggml.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\_internals.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\_internals.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\_logger.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\_logger.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\_utils.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\_utils.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\llama.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\llama.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\llama_cache.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\llama_cache.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\llama_chat_format.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\llama_chat_format.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\llama_cpp.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\llama_cpp.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\llama_grammar.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\llama_grammar.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\llama_speculative.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\llama_speculative.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\llama_tokenizer.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\llama_tokenizer.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\llama_types.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\llama_types.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\llava_cpp.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\llava_cpp.cpython-312.pyc',
+   'DATA'),
+  ('llama_cpp\\~_pycache__\\mtmd_cpp.cpython-312.pyc',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp\\~_pycache__\\mtmd_cpp.cpython-312.pyc',
+   'DATA'),
   ('llama_cpp_python-0.3.23.dist-info\\INSTALLER',
    'F:\\AI chat '
    'app\\.venv\\Lib\\site-packages\\llama_cpp_python-0.3.23.dist-info\\INSTALLER',
@@ -648,6 +717,10 @@
   ('llama_cpp_python-0.3.23.dist-info\\WHEEL',
    'F:\\AI chat '
    'app\\.venv\\Lib\\site-packages\\llama_cpp_python-0.3.23.dist-info\\WHEEL',
+   'DATA'),
+  ('llama_cpp_python-0.3.23.dist-info\\direct_url.json',
+   'F:\\AI chat '
+   'app\\.venv\\Lib\\site-packages\\llama_cpp_python-0.3.23.dist-info\\direct_url.json',
    'DATA'),
   ('llama_cpp_python-0.3.23.dist-info\\licenses\\LICENSE.md',
    'F:\\AI chat '

@@ -24,13 +24,16 @@ _PERM_KEY_FOR_TOOL: Dict[str, str] = {
     "move_file": "file.write",
     "rename_file": "file.write",
     "delete_file": "file.delete",
-    "run_python": "exec.python",
-    "run_shell": "exec.shell",
-    "run_script": "exec.script",
+    "run_python": "exec.code",
+    "run_shell": "exec.code",
+    "run_script": "exec.code",
+    "open_app": "system.open",
     "get_memory": "memory",
     "set_memory": "memory",
     "list_memory": "memory",
     "delete_memory": "memory",
+    "web_search": "network",
+    "web_fetch": "network",
 }
 
 
@@ -47,7 +50,21 @@ class PermissionManager:
         self._send_request = send
 
     def perm_key_for(self, tool: str) -> Optional[str]:
-        return _PERM_KEY_FOR_TOOL.get(tool)
+        key = _PERM_KEY_FOR_TOOL.get(tool)
+        if key is not None:
+            return key
+        # Fall back to the tool's declared permission in the registry, so a
+        # newly added tool is still gated even if this map wasn't updated.
+        # Lazy import — registry imports this module, so a top-level import
+        # would be circular.
+        try:
+            from ..tools.registry import REGISTRY
+            t = REGISTRY.get(tool)
+            if t is not None:
+                return t.permission
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
     def is_granted(self, tool: str) -> bool:
         key = self.perm_key_for(tool)

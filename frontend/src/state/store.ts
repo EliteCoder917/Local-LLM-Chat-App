@@ -9,7 +9,7 @@ import type {
   Tab,
   ToolCall,
 } from './types';
-import { api, BACKEND_HTTP } from '../ipc/bridge';
+import { api, BACKEND_HTTP, type PermissionRequest } from '../ipc/bridge';
 
 const CONV_KEY = 'localAiIde.conversations';
 
@@ -63,6 +63,11 @@ interface State {
 
   setStreaming: (s: boolean) => void;
   setCompacting: (v: boolean) => void;
+  // The pending tool-permission request awaiting a custom-modal decision,
+  // or null when none. Set by the permission:request IPC listener.
+  permissionRequest: PermissionRequest | null;
+  setPermissionRequest: (r: PermissionRequest | null) => void;
+  setPerms: (perms: Record<string, boolean>) => void;
   setSettings: (p: Partial<Settings>) => Promise<void>;
   setPerm: (k: string, v: boolean) => Promise<void>;
   setOpenFile: (path: string | null, content: string, dirty?: boolean) => void;
@@ -90,6 +95,7 @@ const DEFAULT_SETTINGS: Settings = {
   sendImagesAsBase64: true,
   visionHandler: '',
   thinkingMode: 'smart',
+  chatMode: 'normal',
 };
 
 function loadConversations(): Conversation[] {
@@ -134,6 +140,7 @@ export const useStore = create<State>((set, get) => ({
   activeId: null,
   streaming: false,
   compacting: false,
+  permissionRequest: null,
   modelStatus: {
     status: 'idle',
     message: '',
@@ -280,6 +287,10 @@ export const useStore = create<State>((set, get) => ({
 
   setCompacting(v) {
     set({ compacting: v });
+  },
+
+  setPermissionRequest(r) {
+    set({ permissionRequest: r });
   },
 
   deleteMessage(id) {
@@ -444,6 +455,13 @@ export const useStore = create<State>((set, get) => ({
 
   async setPerm(k, v) {
     const perms = await api.perms.set(k, v);
+    set({ perms });
+  },
+
+  // Replace the whole perms map (e.g. after "Allow & remember" in the
+  // permission modal persisted a key via the main process). Keeps the
+  // Settings toggles in sync with what was actually saved to disk.
+  setPerms(perms) {
     set({ perms });
   },
 

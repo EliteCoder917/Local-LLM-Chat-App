@@ -3,14 +3,14 @@ import {
   Plus, ArrowUp, Square, Mic, Sparkles, X,
   Pencil, GraduationCap, Code2, ListChecks, Lightbulb,
   FileText, Image as ImageIcon, Paperclip,
-  Brain, Zap, ChevronDown,
+  MessageSquare, Wrench, Globe, ChevronDown,
 } from 'lucide-react';
 import { useStore } from '../state/store';
 import { api, BACKEND_HTTP } from '../ipc/bridge';
-import { sendChat, estimateAttachmentTokens, thinkingSupported, useExactCtxUsed } from '../hooks/useChat';
-import type { ThinkingMode } from '../state/types';
+import { sendChat, estimateAttachmentTokens, useExactCtxUsed } from '../hooks/useChat';
+import type { ChatMode } from '../state/types';
 import { maybeRunSlash, suggestSlash, COMMANDS } from '../lib/slashCommands';
-import { roughTokens } from '../lib/parseThinking';
+import { roughTokens, stripThinking } from '../lib/parseThinking';
 import type { Attachment } from '../state/types';
 import MessageBubble from './MessageBubble';
 
@@ -443,6 +443,7 @@ export function InputBox({
   // ─── Token math (attachments included honestly) ───────────────────
   const settings = useStore((s) => s.settings);
   const visionActive = useStore((s) => !!s.modelStatus.visionActive);
+  const modelLoaded = useStore((s) => s.modelStatus.status === 'loaded');
   // Images cost their full base64 only when they're actually sent inline —
   // i.e. the engine has vision active, or the user opted into the legacy
   // base64-in-text fallback. Otherwise we just send the short placeholder.
@@ -466,7 +467,13 @@ export function InputBox({
   const fallbackCtxUsed = useMemo(() => {
     let n = roughTokens(settings.systemPrompt);
     for (const m of activeMessages) {
-      n += roughTokens(m.content);
+      // Assistant reasoning is stripped from history before it's sent to the
+      // model (see _materializeForModel), so it does NOT occupy the next
+      // turn's context. Count the visible text only — otherwise this fallback
+      // wildly overcounts (heavy thinking blocks read as ~19% when the exact
+      // path, with the model loaded, correctly shows ~1%).
+      const counted = m.role === 'assistant' ? stripThinking(m.content) : m.content;
+      n += roughTokens(counted);
       if (m.attachments) {
         for (const a of m.attachments) {
           n += estimateAttachmentTokens(a, sendsImageBytes, visionActive);
@@ -557,7 +564,7 @@ export function InputBox({
           >
             <Plus className={`w-4 h-4 transition-transform ${attachMenu ? 'rotate-45' : ''}`} />
           </button>
-          <ThinkingPicker />
+          <ChatModePicker />
           <span className="text-[11px] text-[var(--fg-dim)] ml-1">
             {tokenCount.toLocaleString()} tokens
           </span>
@@ -588,7 +595,9 @@ export function InputBox({
         </div>
 
         <div className="flex items-center gap-2">
-          <ContextWheel used={ctxUsed} max={ctxMax} pct={ctxPct} exact={ctxIsExact} />
+          {/* The wheel only means something with a model loaded (the exact
+              tokenizer is the real signal); hide it entirely when idle. */}
+          {modelLoaded && <ContextWheel used={ctxUsed} max={ctxMax} pct={ctxPct} exact={ctxIsExact} />}
           <button
             title="Voice (not wired)"
             className="w-8 h-8 rounded-full hover:bg-[var(--bg-hover)] flex items-center justify-center text-[var(--fg-muted)]"
@@ -754,10 +763,13 @@ function MenuItem({
  * Only renders when the loaded model recognises Qwen-style `/think` /
  * `/no_think` toggles; for other models the control is hidden entirely.
  */
-function ThinkingPicker() {
+/** Picks how the model behaves in chat: Normal (pure chat), Cowork (agent
+ *  tools — read/write/edit files like the Code tab), or Search (web, soon).
+ *  Only shown in the Chat tab; the Code tab is always agentic. */
+function ChatModePicker() {
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
-  const supported = useStoreThinking();
+  const tab = useStore((s) => s.tab);
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -769,10 +781,11 @@ function ThinkingPicker() {
     return () => document.removeEventListener('mousedown', onDoc);
   }, []);
 
-  if (!supported) return null;
+  // The Code tab is always agentic — the mode picker only makes sense in chat.
+  if (tab !== 'chat') return null;
 
-  const mode = settings.thinkingMode;
-  const current = THINKING_OPTIONS.find((o) => o.value === mode) ?? THINKING_OPTIONS[0];
+  const mode = settings.chatMode;
+  const current = CHAT_MODE_OPTIONS.find((o) => o.value === mode) ?? CHAT_MODE_OPTIONS[0];
   const CurrentIcon = current.icon;
 
   return (
@@ -780,26 +793,28 @@ function ThinkingPicker() {
       <button
         onClick={() => setOpen((o) => !o)}
         className="inline-flex items-center gap-1 pl-2 pr-1.5 h-7 rounded-full text-[11.5px] text-[var(--fg-muted)] hover:bg-[var(--bg-hover)] hover:text-[var(--fg)]"
-        title="Thinking depth"
+        title="Chat mode"
       >
         <CurrentIcon className="w-3.5 h-3.5" />
         <span>{current.label}</span>
         <ChevronDown className="w-3 h-3 text-[var(--fg-dim)]" />
       </button>
       {open && (
-        <div className="absolute left-0 bottom-full mb-2 w-[260px] rounded-xl border bd-strong bg-[var(--bg-app)] shadow-2xl z-30 overflow-hidden">
-          {THINKING_OPTIONS.map((opt) => {
+        <div className="absolute left-0 bottom-full mb-2 w-[280px] rounded-xl border bd-strong bg-[var(--bg-app)] shadow-2xl z-30 overflow-hidden">
+          {CHAT_MODE_OPTIONS.map((opt) => {
             const Icon = opt.icon;
+            const disabled = !!opt.soon;
             return (
               <MenuItem
                 key={opt.value}
                 icon={<Icon className="w-4 h-4" />}
-                label={opt.label}
+                label={opt.soon ? `${opt.label} · soon` : opt.label}
                 hint={opt.hint}
                 active={opt.value === mode}
                 onClick={() => {
+                  if (disabled) return;
                   setOpen(false);
-                  void setSettings({ thinkingMode: opt.value });
+                  void setSettings({ chatMode: opt.value });
                 }}
               />
             );
@@ -810,25 +825,17 @@ function ThinkingPicker() {
   );
 }
 
-const THINKING_OPTIONS: {
-  value: ThinkingMode;
+const CHAT_MODE_OPTIONS: {
+  value: ChatMode;
   label: string;
   hint: string;
   icon: React.ComponentType<{ className?: string }>;
+  soon?: boolean;
 }[] = [
-  { value: 'smart', label: 'Smart', hint: 'Model thinks before answering.',   icon: Sparkles },
-  { value: 'quick', label: 'Quick', hint: 'Skip reasoning. Fastest replies.', icon: Zap },
+  { value: 'normal', label: 'Chat',   hint: 'Plain conversation. No tools.',                       icon: MessageSquare },
+  { value: 'cowork', label: 'Cowork', hint: 'Let the model read, write & edit files in your workspace.', icon: Wrench },
+  { value: 'search', label: 'Search', hint: 'Search the web and read pages. Needs the network permission.', icon: Globe },
 ];
-
-/** Re-renders when modelStatus changes (so the picker appears/disappears
- *  when you switch models). */
-function useStoreThinking(): boolean {
-  // Subscribe to the fields thinkingSupported() reads so React re-renders
-  // when a new model finishes loading and reports its capabilities.
-  useStore((s) => s.modelStatus.status);
-  useStore((s) => s.modelStatus.supportsThinking);
-  return thinkingSupported();
-}
 
 /**
  * Compact donut showing how much of the context window is in use.

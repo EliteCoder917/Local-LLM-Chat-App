@@ -632,14 +632,17 @@ async function _sendCurrent() {
   await maybeCompact();
   const s = useStore.getState();
   const messages = s.activeMessages().map((m) => _materializeForModel(m));
+  // toolMode selects WHICH tools the backend exposes this turn:
+  //   Code tab → 'all'; Chat tab → the mode picker ('normal'|'cowork'|'search').
+  // agentMode (tools on/off) is derived from it.
+  const toolMode = s.tab === 'code' ? 'all' : s.settings.chatMode;
   await api.llm.send({
     messages,
     settings: s.settings,
     workspace: s.workspace,
-    // Tools are only available in the Code tab. Chat tab is pure chat
-    // (no tool catalog injected, no tool calls). This overrides the
-    // backend's CONFIG.agent_mode for THIS request only.
-    agentMode: s.tab === 'code',
+    // Overrides backend CONFIG.agent_mode for THIS request only.
+    agentMode: toolMode !== 'normal',
+    toolMode,
   });
 }
 
@@ -723,8 +726,13 @@ export async function editAndResend(id: string, newContent: string) {
 export function useExactCtxUsed(liveText: string, liveAttachments: Attachment[]): number | null {
   const systemPrompt = useStore((s) => s.settings.systemPrompt);
   const tab = useStore((s) => s.tab);
+  const chatMode = useStore((s) => s.settings.chatMode);
   const workspace = useStore((s) => s.workspace);
   const modelLoaded = useStore((s) => s.modelStatus.status === 'loaded');
+  // Mirror _sendCurrent: tools (and thus the tool catalog) are present for the
+  // Code tab and for Cowork/Search chat modes. Without this the wheel
+  // undercounts in Cowork because /tokenize wouldn't include the catalog.
+  const agentMode = tab === 'code' || chatMode === 'cowork' || chatMode === 'search';
   const activeMessages = useStore((s) =>
     s.activeId ? s.conversations.find((c) => c.id === s.activeId)?.messages ?? [] : [],
   );
@@ -762,7 +770,7 @@ export function useExactCtxUsed(liveText: string, liveAttachments: Attachment[])
           body: JSON.stringify({
             messages: past,
             system_prompt: systemPrompt,
-            agent_mode: tab === 'code',
+            agent_mode: agentMode,
             workspace,
           }),
         });
@@ -777,7 +785,7 @@ export function useExactCtxUsed(liveText: string, liveAttachments: Attachment[])
     }, 250);
     return () => { cancelled = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveText, attachKey, historyKey, systemPrompt, tab, workspace, modelLoaded]);
+  }, [liveText, attachKey, historyKey, systemPrompt, agentMode, workspace, modelLoaded]);
 
   return tokens;
 }

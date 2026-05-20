@@ -1,5 +1,12 @@
 // Renderer-side typed reference to the IPC bridge exposed by preload.
 
+export interface PermissionRequest {
+  id: string;
+  tool: string;
+  description: string;
+  args: Record<string, unknown>;
+}
+
 export interface RendererApi {
   // Backend URL chosen by main.ts (typically http://127.0.0.1:8765, but
   // may shift to an OS-picked port if 8765 was held by a zombie process).
@@ -12,6 +19,8 @@ export interface RendererApi {
   perms: {
     get: () => Promise<Record<string, boolean>>;
     set: (key: string, value: boolean) => Promise<Record<string, boolean>>;
+    respond: (reqId: string, tool: string, granted: boolean, remember: boolean) => Promise<Record<string, boolean>>;
+    onRequest: (cb: (req: PermissionRequest) => void) => () => void;
   };
   fs: {
     pickFolder: () => Promise<string | null>;

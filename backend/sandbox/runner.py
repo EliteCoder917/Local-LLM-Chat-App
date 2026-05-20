@@ -44,15 +44,29 @@ class ExecResult:
 
 
 def _clean_env() -> dict:
-    keep = {"PATH", "SystemRoot", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA",
-            "PYTHONIOENCODING", "PYTHONUNBUFFERED"}
-    env = {k: v for k, v in os.environ.items() if k in keep}
+    """Environment for spawned tool processes.
+
+    We inherit the FULL parent environment. The previous tight allow-list
+    (PATH/SystemRoot/TEMP/…) stripped vars that PowerShell's .NET host needs
+    to even start — it died with "Loading managed Windows PowerShell failed,
+    error 8009001d", which broke run_shell / run_script / open_app entirely.
+    This is a local single-user app and exec tools are permission-gated, so
+    inheriting the environment (as any terminal would) is the right call. We
+    only force UTF-8 / unbuffered IO so we capture output cleanly.
+    """
+    env = dict(os.environ)
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUNBUFFERED", "1")
     return env
 
 
 async def _run(cmd, *, cwd: str, timeout: float, shell: bool) -> ExecResult:
+    # An empty/missing cwd is a hard failure on Windows: create_subprocess_*
+    # raises WinError 123 ("filename, directory name, or volume label syntax
+    # is incorrect"). That's exactly what run_shell hit when no workspace was
+    # open. Fall back to the user's home dir so commands still run.
+    if not cwd or not os.path.isdir(cwd):
+        cwd = os.path.expanduser("~")
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=cwd,
@@ -121,3 +135,53 @@ async def run_subprocess(command: str, *, cwd: str, timeout: float = 20.0,
         cmd = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command]
         return await _run(cmd, cwd=cwd, timeout=timeout, shell=False)
     return await _run(command, cwd=cwd, timeout=timeout, shell=True)
+
+
+async def launch_detached(target: str, args: Optional[list] = None) -> ExecResult:
+    """Open an app, file, folder, or URL via the OS — fire-and-forget.
+
+    Unlike run_subprocess, this is meant for things that KEEP RUNNING (GUI
+    apps). We invoke the OS's universal opener, which spawns the target as an
+    independent process and returns immediately, so:
+      * we never block waiting for a GUI app to close, and
+      * the wait/kill-on-timeout in `_run` only ever touches the launcher
+        (which exits in milliseconds), never the launched app.
+
+    Windows : Start-Process  — resolves app names (App Paths), .exe paths, file
+              associations, folders, and URLs/protocols (e.g. steam://).
+    macOS   : open / open -a
+    Linux   : xdg-open
+    """
+    args = [str(a) for a in (args or [])]
+    if os.name == "nt":
+        t = target.replace("'", "''")
+        arglist = ""
+        if args:
+            quoted = ", ".join("'" + a.replace("'", "''") + "'" for a in args)
+            arglist = f" -ArgumentList {quoted}"
+        # `-ErrorAction Stop` + try/catch makes a failed launch return a
+        # NON-zero exit (Start-Process otherwise often succeeds-silently, so
+        # open_app would falsely report "Launched"). If a bare name like
+        # 'steam' can't be resolved, we retry once via Start-Process again with
+        # the cmd-style `start` shell verb, which consults App Paths/protocols
+        # more liberally.
+        command = (
+            f"try {{ Start-Process -FilePath '{t}'{arglist} -ErrorAction Stop }} "
+            f"catch {{ "
+            f"  try {{ & cmd /c start \"\" '{t}' }} "
+            f"  catch {{ Write-Error $_; exit 1 }} "
+            f"}}"
+        )
+        cmd = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command]
+    elif sys.platform == "darwin":
+        if "://" in target or os.path.exists(target):
+            cmd = ["open", target, *args]
+        else:
+            cmd = ["open", "-a", target, *(["--args", *args] if args else [])]
+    else:  # linux / other
+        cmd = ["xdg-open", target]
+
+    # cwd is irrelevant for launching; use the home dir so we don't pin the
+    # opener to a (possibly missing) workspace path.
+    home = os.path.expanduser("~")
+    return await _run(cmd, cwd=home, timeout=15.0, shell=False)

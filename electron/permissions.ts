@@ -5,9 +5,8 @@ export type PermKey =
   | 'file.read'
   | 'file.write'
   | 'file.delete'
-  | 'exec.python'
-  | 'exec.shell'
-  | 'exec.script'
+  | 'exec.code'      // unified: Python + shell + scripts (all = arbitrary code exec)
+  | 'system.open'    // launch apps / open files & URLs
   | 'network'
   | 'memory';
 
@@ -22,9 +21,8 @@ const DEFAULTS: Record<PermKey, boolean> = {
   'file.read': true,
   'file.write': false,
   'file.delete': false,
-  'exec.python': false,
-  'exec.shell': false,
-  'exec.script': false,
+  'exec.code': false,
+  'system.open': false,
   network: false,
   memory: false,
 };
@@ -67,13 +65,12 @@ export class PermissionManager {
   }
 }
 
-function inferPermKey(tool: string): PermKey | null {
+export function inferPermKey(tool: string): PermKey | null {
   if (tool === 'read_file' || tool === 'list_dir' || tool === 'search_text') return 'file.read';
   if (tool === 'write_file' || tool === 'create_folder' || tool === 'move_file' || tool === 'rename_file') return 'file.write';
   if (tool === 'delete_file') return 'file.delete';
-  if (tool === 'run_python') return 'exec.python';
-  if (tool === 'run_shell') return 'exec.shell';
-  if (tool === 'run_script') return 'exec.script';
+  if (tool === 'run_python' || tool === 'run_shell' || tool === 'run_script') return 'exec.code';
+  if (tool === 'open_app') return 'system.open';
   if (tool === 'get_memory' || tool === 'set_memory' || tool === 'list_memory' || tool === 'delete_memory') return 'memory';
   return null;
 }

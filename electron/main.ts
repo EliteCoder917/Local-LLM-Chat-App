@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { autoUpdater } from 'electron-updater';
 import { PythonBridge } from './python-bridge';
-import { PermissionManager } from './permissions';
+import { PermissionManager, inferPermKey } from './permissions';
 import { Store } from './store';
 
 /** Return a TCP port we can bind to on 127.0.0.1, trying `preferred` first.
@@ -123,9 +123,11 @@ async function createWindow() {
   }
 
   bridge.on('event', (evt) => win?.webContents.send('llm:event', evt));
-  bridge.on('permission-request', async (req) => {
-    const granted = await perms.requestInteractive(win!, req);
-    bridge.sendPermissionResponse(req.id, granted);
+  // Forward permission requests to the renderer so it can show a custom,
+  // in-app modal (instead of the jarring native OS dialog). The renderer
+  // replies via the 'perms:respond' IPC below.
+  bridge.on('permission-request', (req) => {
+    win?.webContents.send('permission:request', req);
   });
 
   // Forward maximize state changes to the renderer so the custom title bar
@@ -209,6 +211,20 @@ ipcMain.handle('perms:get', () => perms.all());
 ipcMain.handle('perms:set', (_e, key: string, value: boolean) => {
   perms.set(key, value);
   bridge.notifyPermissions(perms.all());
+  return perms.all();
+});
+
+// Renderer's reply to a custom permission modal. `remember` persists the
+// inferred permission so the user isn't asked again for that capability.
+ipcMain.handle('perms:respond', (_e, reqId: string, tool: string, granted: boolean, remember: boolean) => {
+  if (granted && remember) {
+    const key = inferPermKey(tool);
+    if (key) {
+      perms.set(key, true);
+      bridge.notifyPermissions(perms.all());
+    }
+  }
+  bridge.sendPermissionResponse(reqId, granted);
   return perms.all();
 });
 

@@ -14,9 +14,9 @@ Types of import:
 IMPORTANT: Do NOT post this list to the issue-tracker. Use it as a basis for
             tracking down the missing module yourself. Thanks!
 
-missing module named pwd - imported by posixpath (delayed, conditional, optional), shutil (delayed, optional), tarfile (optional), pathlib (delayed, optional), subprocess (delayed, conditional, optional), getpass (delayed), netrc (delayed, conditional), http.server (delayed, optional), setuptools._distutils.util (delayed, conditional, optional), setuptools._vendor.backports.tarfile (optional), setuptools._distutils.archive_util (optional)
+missing module named pwd - imported by shutil (delayed, optional), tarfile (optional), pathlib (delayed, optional), subprocess (delayed, conditional, optional), posixpath (delayed, conditional, optional), getpass (delayed), netrc (delayed, conditional), http.server (delayed, optional), setuptools._distutils.util (delayed, conditional, optional), setuptools._vendor.backports.tarfile (optional), setuptools._distutils.archive_util (optional)
 missing module named grp - imported by shutil (delayed, optional), tarfile (optional), pathlib (delayed, optional), subprocess (delayed, conditional, optional), setuptools._vendor.backports.tarfile (optional), setuptools._distutils.archive_util (optional)
-missing module named posix - imported by os (conditional, optional), posixpath (optional), shutil (conditional), importlib._bootstrap_external (conditional)
+missing module named posix - imported by shutil (conditional), importlib._bootstrap_external (conditional), os (conditional, optional), posixpath (optional)
 missing module named resource - imported by posix (top-level)
 missing module named _frozen_importlib_external - imported by importlib._bootstrap (delayed), importlib (optional), importlib.abc (optional), zipimport (top-level)
 excluded module named _frozen_importlib - imported by importlib (optional), importlib.abc (optional), zipimport (top-level)
@@ -40,7 +40,6 @@ missing module named 'java.lang' - imported by platform (delayed, optional)
 missing module named java - imported by platform (delayed)
 missing module named _winreg - imported by platform (delayed, optional)
 missing module named usercustomize - imported by site (delayed, optional)
-missing module named sitecustomize - imported by site (delayed, optional)
 missing module named readline - imported by cmd (delayed, conditional, optional), code (delayed, conditional, optional), pdb (delayed, optional), websockets.cli (delayed, optional), site (delayed, optional), rlcompleter (optional)
 missing module named _manylinux - imported by packaging._manylinux (delayed, optional), setuptools._vendor.packaging._manylinux (delayed, optional)
 missing module named importlib_resources - imported by setuptools._vendor.jaraco.text (optional)
